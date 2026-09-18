@@ -71,16 +71,23 @@ the GPU** (no CUDA, no Apple MPS inside the container). So:
   background run, or later a cloud GPU.
 - Run via VSCode tasks **"Mario: Train PPO"** / **"Mario: Record trained agent"**.
 
-### Phase 3 — Add curiosity 🎯
-- Plug in an **intrinsic reward**: the agent is rewarded for reaching states its
-  own model **fails to predict** (= surprising = new).
-- Two options:
-  - **ICM** (Pathak 2017): forward + inverse models, curiosity = prediction
-    error in a *learned* feature space. Matches the paper exactly.
-  - **RND** (Random Network Distillation, Burda 2018): simpler & more stable,
-    often the better first implementation. Good fallback.
-- The headline experiment: **pure curiosity, zero extrinsic reward** — how far
-  does Mario get driven *only* by the desire to see new things?
+### Phase 3 — Add curiosity 🎯 ✅ IMPLEMENTED (RND)
+- ✅ `src/rnd.py`: **RND** (Random Network Distillation, Burda 2018) as a
+  `VecEnvWrapper`. A frozen random *target* net + a *predictor* net; the
+  prediction error is the intrinsic reward (high on novel frames, decaying as
+  they become familiar). Verified: intrinsic reward 0.33 early → 0.12 later on
+  repeated states.
+- ✅ `src/train_curiosity.py`: PPO trained on
+  `extrinsic_coef * game_reward + intrinsic_coef * curiosity`. Logs the two
+  components separately under `curiosity/*`.
+- ✅ The headline experiment is a one-flag switch: `--extrinsic-coef 0` =
+  **pure curiosity**, no game reward at all.
+- Run via VSCode tasks **"Mario: Train with curiosity"** /
+  **"Mario: Train PURE curiosity"**. Record any model with `record_agent.py
+  --model data/models/mario_curiosity_final.zip`.
+- ⏭️ TODO (compute time): long runs to compare PPO vs PPO+RND vs pure-curiosity.
+- 📝 Alternative not yet built: **ICM** (Pathak 2017), the exact Mario-paper
+  method (forward + inverse models). RND is the simpler cousin we started with.
 
 ### Phase 4 — Experiments & understanding
 - Compare: PPO-only vs PPO+ICM vs pure-curiosity.

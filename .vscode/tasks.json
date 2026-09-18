@@ -47,6 +47,22 @@
       "detail": "Plays one episode with the trained model and saves data/mario_ppo.mp4."
     },
     {
+      "label": "Mario: Train with curiosity (Phase 3)",
+      "type": "shell",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps}'",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "PPO + RND curiosity (game reward + intrinsic). Model -> data/models/mario_curiosity_*.zip."
+    },
+    {
+      "label": "Mario: Train PURE curiosity (Phase 3)",
+      "type": "shell",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps} --extrinsic-coef 0'",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "No game reward at all — Mario driven only by curiosity. Model -> data/models/mario_pure_curiosity_*.zip."
+    },
+    {
       "label": "Docker: Jupyter Down",
       "type": "shell",
       "command": "docker compose -f docker/docker-compose.yml down --remove-orphans",
