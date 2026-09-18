@@ -23,6 +23,14 @@
       "presentation": { "reveal": "silent" }
     },
     {
+      "label": "Mario: Random agent (Phase 1)",
+      "type": "shell",
+      "command": "docker exec mario-jupyter python /app/src/random_agent.py",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "Runs a random agent and saves data/random_agent.mp4 (container must be up)."
+    },
+    {
       "label": "Docker: Jupyter Down",
       "type": "shell",
       "command": "docker compose -f docker/docker-compose.yml down --remove-orphans",

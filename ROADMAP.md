@@ -46,12 +46,17 @@ the GPU** (no CUDA, no Apple MPS inside the container). So:
 
 ## Phases
 
-### Phase 1 — A controllable environment
-- Add `gym-super-mario-bros` + `nes-py` to `docker/requirements.txt`.
-- Standard wrappers: grayscale → resize 84×84 → frame-skip (4) → frame-stack (4),
-  and a small action set (`RIGHT_ONLY` or `SIMPLE_MOVEMENT`).
-- Sanity check: a **random agent** runs and we save a video to `data/`.
-- ✅ Done when: we can step the env and watch Mario flail around.
+### Phase 1 — A controllable environment ✅ DONE
+- ✅ Added `gym-super-mario-bros` + `nes-py` to `docker/requirements.txt`
+  (pinned combo: `gym==0.25.2`, `nes-py==8.2.1`, `gym-super-mario-bros==7.4.0`,
+  `numpy<2`, `opencv<4.12` — see the comments in requirements.txt for why).
+- ✅ `src/random_agent.py`: random agent with `SIMPLE_MOVEMENT`, saves a video
+  to `data/random_agent.mp4`. Run it via the VSCode task
+  **"Mario: Random agent (Phase 1)"** or `python src/random_agent.py`.
+- ⏭️ Still TODO here (small): the standard observation wrappers
+  (grayscale → resize 84×84 → frame-skip 4 → frame-stack 4). We'll add these
+  at the start of Phase 2 since PPO needs them.
+- Done: we can step the env and watch Mario flail around.
 
 ### Phase 2 — Baseline agent (extrinsic reward)
 - Train **PPO** (via `stable-baselines3`) using the game's built-in reward

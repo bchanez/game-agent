@@ -1,7 +1,17 @@
-numpy
-opencv-python-headless>=4.9,<5
+# Core / perception (OpenCV notebook)
+# numpy pinned <2 because nes-py / gym-super-mario-bros require the numpy 1.x ABI.
+# opencv pinned <4.12 because 4.12+ declares numpy>=2 (conflicts with the pin above).
+numpy<2
+opencv-python-headless>=4.9,<4.12
 matplotlib
 jupyterlab
 pandas
 scipy
 seaborn
+
+# Reinforcement learning env (Phase 1 — NES Super Mario Bros)
+# gym pinned 0.25.2: last release with the old 4-tuple step API that nes-py uses.
+gym==0.25.2
+nes-py==8.2.1
+gym-super-mario-bros==7.4.0
+imageio[ffmpeg]
