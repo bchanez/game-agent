@@ -31,6 +31,22 @@
       "detail": "Runs a random agent and saves data/random_agent.mp4 (container must be up)."
     },
     {
+      "label": "Mario: Train PPO (Phase 2)",
+      "type": "shell",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_ppo.py --timesteps ${input:timesteps}'",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "Trains a PPO agent (CPU, slow). Checkpoints -> data/models/, logs -> data/tb/."
+    },
+    {
+      "label": "Mario: Record trained agent (Phase 2)",
+      "type": "shell",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python record_agent.py'",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "Plays one episode with the trained model and saves data/mario_ppo.mp4."
+    },
+    {
       "label": "Docker: Jupyter Down",
       "type": "shell",
       "command": "docker compose -f docker/docker-compose.yml down --remove-orphans",
@@ -48,6 +64,15 @@
       "type": "shell",
       "command": "docker compose -f docker/docker-compose.yml build --no-cache",
       "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "timesteps",
+      "type": "pickString",
+      "description": "How many training steps?",
+      "options": ["30000", "100000", "500000", "1000000"],
+      "default": "100000"
     }
   ]
 }

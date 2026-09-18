@@ -58,12 +58,18 @@ the GPU** (no CUDA, no Apple MPS inside the container). So:
   at the start of Phase 2 since PPO needs them.
 - Done: we can step the env and watch Mario flail around.
 
-### Phase 2 — Baseline agent (extrinsic reward)
-- Train **PPO** (via `stable-baselines3`) using the game's built-in reward
-  (move right, score, don't die). No curiosity yet.
-- Log to TensorBoard (expose a port like Jupyter), record rollouts.
-- ✅ Done when: the agent clearly beats "random" — proves the full loop works
-  *before* we add the interesting part.
+### Phase 2 — Baseline agent (extrinsic reward) ✅ PIPELINE DONE
+- ✅ Observation wrappers in `src/mario_env.py`: frame-skip 4 → resize 84×84 →
+  grayscale → stack 4  (final obs `84×84×4`). Old-gym is bridged to Gymnasium
+  via **shimmy** so **Stable-Baselines3** can consume it.
+- ✅ `src/train_ppo.py`: trains **PPO** (`CnnPolicy`) on the game's built-in
+  reward. Checkpoints → `data/models/`, TensorBoard logs → `data/tb/`.
+  Throughput ≈ 140 agent-steps/s on CPU (≈560 game fps thanks to frame-skip).
+- ✅ `src/record_agent.py`: plays one episode with a trained model → mp4.
+- ⏭️ TODO (just compute time): run a **long** training (500k–1M steps) to get
+  an agent that clearly beats random. On CPU this is hours — candidate for a
+  background run, or later a cloud GPU.
+- Run via VSCode tasks **"Mario: Train PPO"** / **"Mario: Record trained agent"**.
 
 ### Phase 3 — Add curiosity 🎯
 - Plug in an **intrinsic reward**: the agent is rewarded for reaching states its

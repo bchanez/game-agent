@@ -1,4 +1,8 @@
 */.ipynb_checkpoints/*
+__pycache__/
 
-# Generated videos / rollouts
+# Generated videos / rollouts / training artifacts
 data/*.mp4
+data/*.log
+data/models/
+data/tb/
