@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Mario: Start (build + open)",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Docker: Jupyter Up", "Open Jupyter Lab"],
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Docker: Jupyter Up",
+      "type": "shell",
+      "command": "docker compose -f docker/docker-compose.yml up -d --build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Open Jupyter Lab",
+      "type": "shell",
+      "command": "sleep 3 && open http://localhost:8888/lab",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent" }
+    },
+    {
+      "label": "Docker: Jupyter Down",
+      "type": "shell",
+      "command": "docker compose -f docker/docker-compose.yml down --remove-orphans",
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: Logs",
+      "type": "shell",
+      "command": "docker compose -f docker/docker-compose.yml logs -f",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Docker: Rebuild (no cache)",
+      "type": "shell",
+      "command": "docker compose -f docker/docker-compose.yml build --no-cache",
+      "problemMatcher": []
+    }
+  ]
+}

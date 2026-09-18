@@ -1,0 +1,7 @@
+numpy
+opencv-python-headless>=4.9,<5
+matplotlib
+jupyterlab
+pandas
+scipy
+seaborn
