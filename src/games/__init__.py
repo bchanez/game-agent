@@ -5,8 +5,9 @@ Add a new game by dropping a module in this package that exposes a `SPEC`
 `--game <name>`; nothing else changes.
 """
 from games.mario import SPEC as mario
+from games.atari import montezuma, breakout
 
-REGISTRY = {spec.name: spec for spec in (mario,)}
+REGISTRY = {spec.name: spec for spec in (mario, montezuma, breakout)}
 
 
 def get_game(name):

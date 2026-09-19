@@ -51,12 +51,15 @@ class GameSpec:
                       **discrete action space** — the emulator/adapter, before
                       the shared observation pipeline is applied.
         progress_key: info-dict key measuring how far the agent got (for eval).
+                      None if the game exposes no such key (e.g. Atari) — eval
+                      then falls back to episode return.
         success_key:  info-dict key that flags an episode as "won" (for eval).
+                      None if the game has no explicit win condition.
     """
     name: str
     make_raw_env: Callable[[], gym.Env]
-    progress_key: str = "x_pos"
-    success_key: str = "flag_get"
+    progress_key: str = None
+    success_key: str = None
 
 
 def _obs_pipeline(env):

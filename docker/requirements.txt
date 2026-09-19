@@ -23,3 +23,7 @@ gymnasium==1.1.1
 shimmy==2.0.0
 torch==2.8.0
 tensorboard
+
+# Phase 7 — Atari suite (ALE). Second adapter family behind the GameEnv
+# interface. ale-py 0.11 bundles the ROMs and is happy with the numpy<2 pin.
+ale-py==0.11.2

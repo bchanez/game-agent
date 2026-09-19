@@ -28,22 +28,26 @@ VARIANTS = {
 def evaluate(spec, model_path, episodes, max_steps=4000):
     venv = VecTransposeImage(make_venv(spec, 1))
     model = PPO.load(model_path)
-    xs, wins = [], 0
+    scores, wins = [], 0
     for _ in range(episodes):
         obs = venv.reset()
-        done, steps, max_x = False, 0, 0
-        won = False
+        done, steps = False, 0
+        best_progress, ep_return, won = 0, 0.0, False
         while not done and steps < max_steps:
             action, _ = model.predict(obs, deterministic=False)
             obs, reward, dones, infos = venv.step(action)
-            max_x = max(max_x, infos[0].get(spec.progress_key, 0))
-            won = won or bool(infos[0].get(spec.success_key, False))
+            ep_return += float(reward[0])
+            if spec.progress_key:
+                best_progress = max(best_progress, infos[0].get(spec.progress_key, 0))
+            if spec.success_key:
+                won = won or bool(infos[0].get(spec.success_key, False))
             done = bool(dones[0])
             steps += 1
-        xs.append(max_x)
+        # progress_key games (Mario) score by furthest reached; others by return.
+        scores.append(best_progress if spec.progress_key else ep_return)
         wins += int(won)
     venv.close()
-    return np.mean(xs), np.max(xs), wins
+    return np.mean(scores), np.max(scores), wins
 
 
 def main():
@@ -53,8 +57,9 @@ def main():
     args = ap.parse_args()
 
     spec = get_game(args.game)
+    metric = spec.progress_key or "episode return"
     print(f"Evaluating {spec.name} over {args.episodes} episodes each "
-          f"(progress = {spec.progress_key}, win = {spec.success_key})\n")
+          f"(score = {metric})\n")
     print(f"{'model':<18} {'mean':>8} {'max':>7} {'wins':>7}")
     print("-" * 44)
     for label, suffix in VARIANTS.items():

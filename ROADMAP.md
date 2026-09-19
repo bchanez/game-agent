@@ -91,13 +91,26 @@ Mario-paper method), and hit the **"noisy TV"** failure mode.
   Model names unchanged (`mario_ppo_final`…) so existing models still load.
 - **Adding a game is now a new file in `src/games/`, not a rewrite.**
 
-### Phase 7 — Adapter #2: Atari suite (ALE), incl. Montezuma's Revenge ⏭️ NEXT
-- ALE gives ~60 games behind one Gym interface → the **"multiple games"** goal
-  almost for free, same PPO+RND code.
-- **Montezuma's Revenge** is *the* canonical sparse-reward game curiosity was
-  built for. It tests our own `FINDINGS.md` takeaway #4: on Mario (dense reward)
-  curiosity only *helps*; on Montezuma it should be the difference between **0
-  and real progress**.
+### Phase 7 — Adapter #2: Atari suite (ALE) ✅ WIRED (results pending compute)
+- `src/games/atari.py`: one `atari_spec(name, env_id)` factory → adding an Atari
+  game is a single line. First two: **Montezuma's Revenge** and **Breakout**.
+  Registered alongside Mario; `ale-py==0.11.2` pinned in `docker/requirements.txt`
+  (bundles ROMs, happy with numpy<2). No change to the training code — the
+  `GameEnv` interface paid off.
+- ALE has no `x_pos`/`flag_get`, so `GameSpec` progress/success keys are optional;
+  `eval_models.py` falls back to **episode return** for such games.
+- **Smoke-tested** (1024 steps, 2 envs): both games train through the same PPO
+  and PPO+RND code, ~1100 fps. The sparse-reward wall is already visible —
+  Montezuma gives PPO `ep_rew_mean = 0`, while pure curiosity produces a real
+  intrinsic signal (`intrinsic_mean ≈ 0.25`). This is our `FINDINGS.md`
+  takeaway #4: on Mario (dense reward) curiosity only *helps*; on Montezuma it's
+  the only signal there is.
+- ⚠️ **Real results need compute.** Montezuma is famously hard — millions of
+  steps and realistically a GPU to show the curiosity payoff. On this CPU-only
+  Mac, Breakout will give a quick clean result; Montezuma is a longer bet.
+- Note (refinement): we reuse the generic obs pipeline, not SB3's full
+  `AtariWrapper` (episodic-life / fire-reset / reward-clipping). Fine to start;
+  add per-adapter later if Atari scores stall.
 
 ### Phase 8 — Adapter #3: a *normal* interface (no modified emulator)
 - Generic **screen-capture + key-injection** env, pointed at the original
