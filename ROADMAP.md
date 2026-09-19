@@ -1,126 +1,118 @@
-# Roadmap — Curiosity-driven Mario
+# Roadmap — game-agent
 
-Goal: an agent that learns to play Super Mario **by curiosity** — it explores
-because new situations are *interesting*, not (only) because we hand it a reward.
+## The vision: one generic game-playing agent
 
-This is **Reinforcement Learning (RL)**. Reference paper:
-*Curiosity-driven Exploration by Self-supervised Prediction*, Pathak et al., 2017
-(the ICM module — and their headline demo is literally Mario).
+The long-term goal is **one agent that can play many games**, ideally through a
+*normal* interface (look at the screen, press keys) rather than a modified
+emulator with a clean `env.step()`.
+
+Two axes, often confused — we keep them separate:
+
+1. **Multiple games** — breadth, with a single code path.
+2. **Normal interface** — driving an *unmodified* game (screen capture + input
+   injection), not a research emulator.
+
+And two meanings of "generic":
+
+| | Generic *framework* | Generic *brain* |
+|---|---|---|
+| What's shared | the code / pipeline | the trained model itself |
+| Reality | retrain **per game** | one model plays games it never saw |
+| Difficulty | easy — we're nearly there | research frontier |
+
+**Architecture that unifies it all** — a clean `GameEnv` boundary (pixels in,
+button out) with swappable pieces:
+
+```
+        ┌─────────────────────────────┐
+        │   AGENT (the brain)          │   PPO+RND now → reasoning/VLM later
+        └─────────────────────────────┘
+                     ↕  obs (pixels) / action (button)
+        ┌─────────────────────────────┐
+        │   ADAPTER (the interface)    │
+        │  NES emu · ALE/retro · grab  │   swappable per game
+        └─────────────────────────────┘
+```
+
+So this is **not several projects** — it's *one* architecture, several game
+adapters, and (eventually) two kinds of brain. **ARC-style abstract reasoning**
+is not a detour but the bridge to the "generic brain" (a reasoning agent that
+looks at any screen and acts).
+
+**Guiding principle — no human indication.** The agent learns from **raw pixels
+only**. No hand-crafted perception (template matching, sprite detection,
+scripted state), no reward engineering tailored to a specific game. I hand it
+the game; it figures the rest out. (This is why we deleted the OpenCV
+`detection.ipynb` branch — it did the perception *for* the agent.)
 
 ---
 
-## Where we are today
+## First study: curiosity-driven Mario ✅ DONE
 
-- `src/detection.ipynb` = OpenCV **template matching**. This is *perception*
-  (where things are on screen), **not** machine learning — there is no learning.
-- It stays useful as a "perception playground", but the RL agent below will not
-  need it at first: modern RL usually eats **raw pixels**.
+An RL agent that plays Super Mario **by curiosity** — exploring because new
+situations are *interesting*, not only because we hand it a reward. Reference:
+*Curiosity-driven Exploration by Self-supervised Prediction*, Pathak et al. 2017.
 
----
+- **Env**: `gym-super-mario-bros` (NES emulator via `nes-py`), bridged to
+  Gymnasium with **shimmy**. Obs pipeline in `src/mario_env.py`: frame-skip 4 →
+  resize 84×84 → grayscale → stack 4 (final `84×84×4`). Runs CPU-only in Docker.
+- **Algorithm**: PPO (`CnnPolicy`, Stable-Baselines3), 8 parallel envs.
+- **Curiosity**: `src/rnd.py` — RND (Burda 2018) as a `VecEnvWrapper`; prediction
+  error = intrinsic reward. `src/train_curiosity.py` trains on
+  `extrinsic_coef*game_reward + intrinsic_coef*curiosity` — `--extrinsic-coef 0`
+  gives **pure curiosity** (no game reward at all).
+- **Result** (1M steps each, `src/eval_models.py`, x~3200 = end of 1-1). Full
+  analysis in `FINDINGS.md`:
 
-## Important decision up front: which Mario?
+  | model | mean x | max x | flags |
+  |---|--:|--:|--:|
+  | PPO baseline | 2543 | 3161 | 1/10 |
+  | PPO + curiosity | **2798** | 3161 | 1/10 |
+  | pure curiosity | 1834 | 2814 | 0/10 |
 
-The README targets the **web** game (smbgames.be, Flash/JS). For RL that's a
-dead-end: no clean `reset()/step()/reward`, you'd need browser automation +
-screen capture + key injection, and it's slow and fragile.
-
-➡️ **Switch to `gym-super-mario-bros`** (a real NES emulator via `nes-py`). It's
-*the* standard research environment and gives you out of the box:
-`observation, reward, done, info = env.step(action)`, plus frames and controls.
-Everything still runs in Docker (Python 3.9 is compatible).
-
----
-
-## The big constraint: Docker on Mac = CPU only
-
-RL training is compute-heavy. On your Mac, a Linux Docker container **cannot use
-the GPU** (no CUDA, no Apple MPS inside the container). So:
-
-- Training in Docker will be **CPU-only and slow** (fine for learning + small
-  experiments, painful for "beat the level").
-- Options when it gets too slow: (a) accept it for learning, use small nets +
-  frame-skip; (b) run PyTorch natively on Mac with MPS (breaks "nothing local");
-  (c) rent a cloud GPU later. We'll start with (a).
+Open follow-ups: longer runs (5–10M steps), implement **ICM** (the exact
+Mario-paper method), and hit the **"noisy TV"** failure mode.
 
 ---
 
-## Phases
+## Going generic (the multi-game direction)
 
-### Phase 1 — A controllable environment ✅ DONE
-- ✅ Added `gym-super-mario-bros` + `nes-py` to `docker/requirements.txt`
-  (pinned combo: `gym==0.25.2`, `nes-py==8.2.1`, `gym-super-mario-bros==7.4.0`,
-  `numpy<2`, `opencv<4.12` — see the comments in requirements.txt for why).
-- ✅ `src/random_agent.py`: random agent with `SIMPLE_MOVEMENT`, saves a video
-  to `data/random_agent.mp4`. Run it via the VSCode task
-  **"Mario: Random agent (Phase 1)"** or `python src/random_agent.py`.
-- ⏭️ Still TODO here (small): the standard observation wrappers
-  (grayscale → resize 84×84 → frame-skip 4 → frame-stack 4). We'll add these
-  at the start of Phase 2 since PPO needs them.
-- Done: we can step the env and watch Mario flail around.
+### Phase 6 — Extract the `GameEnv` interface ⏭️ NEXT
+- Refactor `src/mario_env.py` behind a small, game-agnostic boundary: **pixels
+  in, discrete button out**. Mario becomes *adapter #1*, not the whole thing.
+- Goal: adding a new game is a ~20-line adapter, not a rewrite. The PPO+RND
+  training code shouldn't know which game it's driving.
 
-### Phase 2 — Baseline agent (extrinsic reward) ✅ PIPELINE DONE
-- ✅ Observation wrappers in `src/mario_env.py`: frame-skip 4 → resize 84×84 →
-  grayscale → stack 4  (final obs `84×84×4`). Old-gym is bridged to Gymnasium
-  via **shimmy** so **Stable-Baselines3** can consume it.
-- ✅ `src/train_ppo.py`: trains **PPO** (`CnnPolicy`) on the game's built-in
-  reward. Checkpoints → `data/models/`, TensorBoard logs → `data/tb/`.
-  Throughput ≈ 140 agent-steps/s on CPU (≈560 game fps thanks to frame-skip).
-- ✅ `src/record_agent.py`: plays one episode with a trained model → mp4.
-- ⏭️ TODO (just compute time): run a **long** training (500k–1M steps) to get
-  an agent that clearly beats random. On CPU this is hours — candidate for a
-  background run, or later a cloud GPU.
-- Run via VSCode tasks **"Mario: Train PPO"** / **"Mario: Record trained agent"**.
+### Phase 7 — Adapter #2: Atari suite (ALE), incl. Montezuma's Revenge
+- ALE gives ~60 games behind one Gym interface → the **"multiple games"** goal
+  almost for free, same PPO+RND code.
+- **Montezuma's Revenge** is *the* canonical sparse-reward game curiosity was
+  built for. It tests our own `FINDINGS.md` takeaway #4: on Mario (dense reward)
+  curiosity only *helps*; on Montezuma it should be the difference between **0
+  and real progress**.
 
-### Phase 3 — Add curiosity 🎯 ✅ IMPLEMENTED (RND)
-- ✅ `src/rnd.py`: **RND** (Random Network Distillation, Burda 2018) as a
-  `VecEnvWrapper`. A frozen random *target* net + a *predictor* net; the
-  prediction error is the intrinsic reward (high on novel frames, decaying as
-  they become familiar). Verified: intrinsic reward 0.33 early → 0.12 later on
-  repeated states.
-- ✅ `src/train_curiosity.py`: PPO trained on
-  `extrinsic_coef * game_reward + intrinsic_coef * curiosity`. Logs the two
-  components separately under `curiosity/*`.
-- ✅ The headline experiment is a one-flag switch: `--extrinsic-coef 0` =
-  **pure curiosity**, no game reward at all.
-- Run via VSCode tasks **"Mario: Train with curiosity"** /
-  **"Mario: Train PURE curiosity"**. Record any model with `record_agent.py
-  --model data/models/mario_curiosity_final.zip`.
-- ⏭️ TODO (compute time): long runs to compare PPO vs PPO+RND vs pure-curiosity.
-- 📝 Alternative not yet built: **ICM** (Pathak 2017), the exact Mario-paper
-  method (forward + inverse models). RND is the simpler cousin we started with.
+### Phase 8 — Adapter #3: a *normal* interface (no modified emulator)
+- Generic **screen-capture + key-injection** env, pointed at the original
+  `smbgames.be` web Mario (full circle!) or any browser game.
+- New challenge: no clean reward signal from the game. Per the *no human
+  indication* principle, the answer is **pure curiosity** (`--extrinsic-coef 0`)
+  — the agent needs *no* reward at all, just novelty. We already proved this
+  works on Mario (x~1834 with zero game reward). This is the purest form of the
+  goal: hand it an unmodified game, it plays, no hints.
+- Remaining challenges are honest engineering: capture latency and reliable
+  input injection.
 
-### Phase 4 — Experiments & understanding ✅ FIRST COMPARISON DONE
-First comparison — each trained 1M steps (8 envs, ~70 min each on CPU),
-evaluated over 10 episodes (`src/eval_models.py`). x_pos ~3200 = end of 1-1:
-
-| model            | mean x | max x | flags |
-|------------------|-------:|------:|------:|
-| PPO baseline     |   2543 |  3161 |  1/10 |
-| PPO + curiosity  | **2798** | 3161 |  1/10 |
-| pure curiosity   |   1834 |  2814 |  0/10 |
-
-Takeaways:
-- **Curiosity helps**: PPO+curiosity gets furthest on average (2798 vs 2543).
-- **Pure curiosity works**: with *zero* game reward, Mario still reaches
-  x~1834 (max 2814) — moving right = new scenery = novelty. This reproduces the
-  headline result of the Pathak paper.
-- Videos: `data/vid_ppo.mp4`, `data/vid_curiosity.mp4`, `data/vid_pure_curiosity.mp4`.
-
-Next experiments to push further:
-- Longer training (5–10M steps) to push the flag rate up.
-- Meet the classic failure mode: the **"noisy TV" problem** (curiosity gets
-  addicted to random noise).
-- Overlay the TensorBoard curves (`data/tb/`) for the three runs.
-- Implement **ICM** (the exact Mario-paper method) and add it to the table.
-
-### Phase 5 — (optional) reconnect your OpenCV work
-- Feed a **feature-based** state (from detection) instead of raw pixels, or a
-  hybrid. Lets you revisit the notebook with a purpose.
+### Phase 9 — The "generic brain": a reasoning / VLM agent 🌫️ FRONTIER
+- On the same `GameEnv`, swap PPO for a **reasoning agent** (look at the screen,
+  think, press a key) aiming to play games it *never trained on*. This is where
+  **ARC-style abstract reasoning** connects — the reasoning benchmark for a
+  generic agent, not a separate project.
 
 ---
 
 ## Suggested next step
 
-Phase 1 only: wire `gym-super-mario-bros` into the container and get a random
-agent running with a saved video. Small, self-contained, and it tells us fast
-whether the NES env behaves well inside Docker before investing in training.
+**Phase 6**: extract the `GameEnv` interface and re-express Mario as the first
+adapter behind it. Small, self-contained, and the unlock for everything after —
+Atari (Phase 7) and a screen-capture env (Phase 8) then drop in as new adapters
+instead of rewrites.

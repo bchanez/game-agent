@@ -1,7 +1,11 @@
-# machine-learning
+# game-agent
 
-The goal is to play mario
-https://www.smbgames.be/super-mario-bros.php
+Building toward a **generic game-playing agent**: one architecture that can play
+many games, ideally through a *normal* interface (screen capture + input) rather
+than a modified emulator.
+
+First study (done): a curiosity-driven RL agent on Super Mario Bros — see
+`ROADMAP.md` and `FINDINGS.md`. Original inspiration: https://www.smbgames.be/super-mario-bros.php
 
 # Run (nothing to install locally, everything lives in Docker)
 
