@@ -89,11 +89,29 @@ the GPU** (no CUDA, no Apple MPS inside the container). So:
 - 📝 Alternative not yet built: **ICM** (Pathak 2017), the exact Mario-paper
   method (forward + inverse models). RND is the simpler cousin we started with.
 
-### Phase 4 — Experiments & understanding
-- Compare: PPO-only vs PPO+ICM vs pure-curiosity.
-- Meet the classic failure: the **"noisy TV" problem** (curiosity gets addicted
-  to random noise) — a great lesson in why curiosity is subtle.
-- Metrics: distance travelled, % level completed, intrinsic-reward curves.
+### Phase 4 — Experiments & understanding ✅ FIRST COMPARISON DONE
+First comparison — each trained 1M steps (8 envs, ~70 min each on CPU),
+evaluated over 10 episodes (`src/eval_models.py`). x_pos ~3200 = end of 1-1:
+
+| model            | mean x | max x | flags |
+|------------------|-------:|------:|------:|
+| PPO baseline     |   2543 |  3161 |  1/10 |
+| PPO + curiosity  | **2798** | 3161 |  1/10 |
+| pure curiosity   |   1834 |  2814 |  0/10 |
+
+Takeaways:
+- **Curiosity helps**: PPO+curiosity gets furthest on average (2798 vs 2543).
+- **Pure curiosity works**: with *zero* game reward, Mario still reaches
+  x~1834 (max 2814) — moving right = new scenery = novelty. This reproduces the
+  headline result of the Pathak paper.
+- Videos: `data/vid_ppo.mp4`, `data/vid_curiosity.mp4`, `data/vid_pure_curiosity.mp4`.
+
+Next experiments to push further:
+- Longer training (5–10M steps) to push the flag rate up.
+- Meet the classic failure mode: the **"noisy TV" problem** (curiosity gets
+  addicted to random noise).
+- Overlay the TensorBoard curves (`data/tb/`) for the three runs.
+- Implement **ICM** (the exact Mario-paper method) and add it to the table.
 
 ### Phase 5 — (optional) reconnect your OpenCV work
 - Feed a **feature-based** state (from detection) instead of raw pixels, or a

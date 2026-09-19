@@ -33,7 +33,7 @@
     {
       "label": "Mario: Train PPO (Phase 2)",
       "type": "shell",
-      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_ppo.py --timesteps ${input:timesteps}'",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_ppo.py --timesteps ${input:timesteps} --n-envs 8'",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "shared" },
       "detail": "Trains a PPO agent (CPU, slow). Checkpoints -> data/models/, logs -> data/tb/."
@@ -49,7 +49,7 @@
     {
       "label": "Mario: Train with curiosity (Phase 3)",
       "type": "shell",
-      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps}'",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps} --n-envs 8'",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "shared" },
       "detail": "PPO + RND curiosity (game reward + intrinsic). Model -> data/models/mario_curiosity_*.zip."
@@ -57,7 +57,7 @@
     {
       "label": "Mario: Train PURE curiosity (Phase 3)",
       "type": "shell",
-      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps} --extrinsic-coef 0'",
+      "command": "docker exec mario-jupyter bash -lc 'cd /app/src && python train_curiosity.py --timesteps ${input:timesteps} --extrinsic-coef 0 --n-envs 8'",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "shared" },
       "detail": "No game reward at all — Mario driven only by curiosity. Model -> data/models/mario_pure_curiosity_*.zip."

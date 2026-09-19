@@ -18,7 +18,9 @@ from shimmy import GymV21CompatibilityV0
 import gymnasium as gym
 from gymnasium.wrappers import GrayscaleObservation, ResizeObservation
 from stable_baselines3.common.atari_wrappers import MaxAndSkipEnv
-from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecMonitor
+from stable_baselines3.common.vec_env import (
+    DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor,
+)
 
 
 class RgbCapture(gym.Wrapper):
@@ -46,9 +48,18 @@ def make_single_env():
     return env
 
 
-def make_venv(n_envs=1):
-    """Vectorized, frame-stacked env ready for Stable-Baselines3."""
-    venv = DummyVecEnv([make_single_env for _ in range(n_envs)])
+def make_venv(n_envs=1, subproc=None):
+    """Vectorized, frame-stacked env ready for Stable-Baselines3.
+
+    With n_envs>1 the environments run in separate processes (SubprocVecEnv),
+    which is the main way to speed up training on a multi-core CPU. On this
+    machine ~8 envs is the sweet spot. Scripts using this must be guarded by
+    `if __name__ == "__main__"` (SubprocVecEnv re-imports the module).
+    """
+    if subproc is None:
+        subproc = n_envs > 1
+    env_fns = [make_single_env for _ in range(n_envs)]
+    venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
     venv = VecFrameStack(venv, 4, channels_order="last")
     venv = VecMonitor(venv)
     return venv
