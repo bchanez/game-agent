@@ -113,3 +113,23 @@ class RNDReward(VecEnvWrapper):
             info["intrinsic"] = float(intr[i])
             info["extrinsic"] = float(rews[i])
         return obs, total, dones, infos
+
+    # --- save / load the "second brain" (RND nets + normalization stats) so
+    # --- curiosity training can be resumed instead of restarting from scratch.
+    def save_rnd(self, path):
+        torch.save({
+            "target": self.target.state_dict(),
+            "predictor": self.predictor.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "obs_rms": (self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count),
+            "rew_rms": (self.rew_rms.mean, self.rew_rms.var, self.rew_rms.count),
+        }, path)
+
+    def load_rnd(self, path):
+        # our own file (contains numpy normalization stats) -> weights_only=False
+        ck = torch.load(path, map_location=self.device, weights_only=False)
+        self.target.load_state_dict(ck["target"])
+        self.predictor.load_state_dict(ck["predictor"])
+        self.optimizer.load_state_dict(ck["optimizer"])
+        self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count = ck["obs_rms"]
+        self.rew_rms.mean, self.rew_rms.var, self.rew_rms.count = ck["rew_rms"]

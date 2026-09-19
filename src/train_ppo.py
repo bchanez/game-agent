@@ -27,36 +27,37 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timesteps", type=int, default=100_000)
     ap.add_argument("--n-envs", type=int, default=1)
+    ap.add_argument("--resume", default=None,
+                    help="path to a .zip to continue training from (else fresh)")
     args = ap.parse_args()
 
     os.makedirs(MODELS_DIR, exist_ok=True)
-
     venv = make_venv(args.n_envs)
-    model = PPO(
-        "CnnPolicy",
-        venv,
-        verbose=1,
-        n_steps=512,
-        batch_size=64,
-        n_epochs=10,
-        learning_rate=1e-4,
-        gamma=0.9,
-        gae_lambda=1.0,
-        ent_coef=0.01,
-        tensorboard_log=TB_DIR,
-        device="cpu",
-    )
+
+    if args.resume:
+        prefix = "mario_ppo_cont"
+        print(f"Resuming from {args.resume}", flush=True)
+        model = PPO.load(args.resume, env=venv, device="cpu",
+                         tensorboard_log=TB_DIR)
+    else:
+        prefix = "mario_ppo"
+        model = PPO(
+            "CnnPolicy", venv, verbose=1,
+            n_steps=512, batch_size=64, n_epochs=10,
+            learning_rate=1e-4, gamma=0.9, gae_lambda=1.0, ent_coef=0.01,
+            tensorboard_log=TB_DIR, device="cpu",
+        )
 
     ckpt = CheckpointCallback(
         save_freq=max(20_000 // args.n_envs, 1),
-        save_path=MODELS_DIR,
-        name_prefix="mario_ppo",
+        save_path=MODELS_DIR, name_prefix=prefix,
     )
 
     print(f"Training PPO for {args.timesteps} steps on {args.n_envs} env(s)...", flush=True)
-    model.learn(total_timesteps=args.timesteps, callback=ckpt)
+    model.learn(total_timesteps=args.timesteps, callback=ckpt,
+                reset_num_timesteps=args.resume is None)
 
-    final = os.path.join(MODELS_DIR, "mario_ppo_final")
+    final = os.path.join(MODELS_DIR, f"{prefix}_final")
     model.save(final)
     print(f"Saved {final}.zip", flush=True)
 

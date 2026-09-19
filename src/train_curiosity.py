@@ -50,10 +50,13 @@ def main():
     ap.add_argument("--n-envs", type=int, default=1)
     ap.add_argument("--intrinsic-coef", type=float, default=1.0)
     ap.add_argument("--extrinsic-coef", type=float, default=1.0)
+    ap.add_argument("--resume", default=None,
+                    help="path to a .zip to continue training from (else fresh)")
     args = ap.parse_args()
 
     os.makedirs(MODELS_DIR, exist_ok=True)
-    tag = "pure_curiosity" if args.extrinsic_coef == 0 else "curiosity"
+    base_tag = "pure_curiosity" if args.extrinsic_coef == 0 else "curiosity"
+    tag = f"{base_tag}_cont" if args.resume else base_tag
 
     venv = RNDReward(
         make_venv(args.n_envs),
@@ -61,12 +64,22 @@ def main():
         extrinsic_coef=args.extrinsic_coef,
         device="cpu",
     )
-    model = PPO(
-        "CnnPolicy", venv, verbose=1,
-        n_steps=512, batch_size=64, n_epochs=10,
-        learning_rate=1e-4, gamma=0.9, ent_coef=0.01,
-        tensorboard_log=TB_DIR, device="cpu",
-    )
+
+    if args.resume:
+        print(f"Resuming from {args.resume} (+ RND state)", flush=True)
+        rnd_path = (args.resume[:-4] if args.resume.endswith(".zip") else args.resume) + ".rnd"
+        if os.path.exists(rnd_path):
+            venv.load_rnd(rnd_path)   # restore the "second brain" too
+        else:
+            print(f"  warning: {rnd_path} not found — RND predictor restarts fresh", flush=True)
+        model = PPO.load(args.resume, env=venv, device="cpu", tensorboard_log=TB_DIR)
+    else:
+        model = PPO(
+            "CnnPolicy", venv, verbose=1,
+            n_steps=512, batch_size=64, n_epochs=10,
+            learning_rate=1e-4, gamma=0.9, ent_coef=0.01,
+            tensorboard_log=TB_DIR, device="cpu",
+        )
     ckpt = CheckpointCallback(
         save_freq=max(20_000 // args.n_envs, 1),
         save_path=MODELS_DIR, name_prefix=f"mario_{tag}",
@@ -74,11 +87,13 @@ def main():
 
     print(f"Training PPO+RND ({tag}) for {args.timesteps} steps "
           f"[intrinsic={args.intrinsic_coef}, extrinsic={args.extrinsic_coef}]", flush=True)
-    model.learn(total_timesteps=args.timesteps, callback=[ckpt, CuriosityStats()])
+    model.learn(total_timesteps=args.timesteps, callback=[ckpt, CuriosityStats()],
+                reset_num_timesteps=args.resume is None)
 
     final = os.path.join(MODELS_DIR, f"mario_{tag}_final")
     model.save(final)
-    print(f"Saved {final}.zip", flush=True)
+    venv.save_rnd(final + ".rnd")   # save both brains together
+    print(f"Saved {final}.zip (+ .rnd)", flush=True)
 
 
 if __name__ == "__main__":
