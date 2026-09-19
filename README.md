@@ -9,8 +9,9 @@ First study (done): a curiosity-driven RL agent on Super Mario Bros — see
 
 # Run (nothing to install locally, everything lives in Docker)
 
-Everything runs inside a Docker container: Python, OpenCV, Jupyter Lab.
-The only requirement on your machine is Docker.
+Everything runs inside a Docker container: Python, PyTorch, Stable-Baselines3,
+the game emulators (NES + Atari/ALE), and Jupyter Lab. The only requirement on
+your machine is Docker. Training is CPU-only on Mac.
 
 ## From VSCode (recommended)
 
@@ -32,7 +33,20 @@ docker compose -f docker/docker-compose.yml up -d --build   # start
 docker compose -f docker/docker-compose.yml down            # stop
 ```
 
-Then open http://localhost:8888/lab and run `src/detection.ipynb`.
+## Train / evaluate an agent
+
+Every script takes `--game` (see `src/games/` for what's registered: `mario`,
+`montezuma`, `breakout`). Against the running container:
+
+```sh
+docker exec mario-jupyter bash -c "cd /app && python src/train_curiosity.py --game breakout --timesteps 1000000 --n-envs 8"
+docker exec mario-jupyter bash -c "cd /app && python src/eval_models.py --game breakout"
+docker exec mario-jupyter bash -c "cd /app && python src/record_agent.py --game breakout --model data/models/breakout_curiosity_final.zip"
+```
+
+Or open http://localhost:8888/lab and run `src/train.ipynb` to train and watch
+an agent interactively. See `ROADMAP.md` for the architecture and `FINDINGS.md`
+for research results.
 
 # Useful docker commands
 

@@ -47,70 +47,21 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
 
 ---
 
-## First study: curiosity-driven Mario ✅ DONE
+## Status (done — details in `FINDINGS.md` and git history)
 
-An RL agent that plays Super Mario **by curiosity** — exploring because new
-situations are *interesting*, not only because we hand it a reward. Reference:
-*Curiosity-driven Exploration by Self-supervised Prediction*, Pathak et al. 2017.
-
-- **Env**: `gym-super-mario-bros` (NES emulator via `nes-py`), bridged to
-  Gymnasium with **shimmy**. Since Phase 6 it's the first adapter behind the
-  generic `GameEnv` interface (`src/games/mario.py`); the shared obs pipeline
-  (`src/game_env.py`) is frame-skip 4 → resize 84×84 → grayscale → stack 4
-  (final `84×84×4`). Runs CPU-only in Docker.
-- **Algorithm**: PPO (`CnnPolicy`, Stable-Baselines3), 8 parallel envs.
-- **Curiosity**: `src/rnd.py` — RND (Burda 2018) as a `VecEnvWrapper`; prediction
-  error = intrinsic reward. `src/train_curiosity.py` trains on
-  `extrinsic_coef*game_reward + intrinsic_coef*curiosity` — `--extrinsic-coef 0`
-  gives **pure curiosity** (no game reward at all).
-- **Result** (1M steps each, `src/eval_models.py`, x~3200 = end of 1-1). Full
-  analysis in `FINDINGS.md`:
-
-  | model | mean x | max x | flags |
-  |---|--:|--:|--:|
-  | PPO baseline | 2543 | 3161 | 1/10 |
-  | PPO + curiosity | **2798** | 3161 | 1/10 |
-  | pure curiosity | 1834 | 2814 | 0/10 |
-
-Open follow-ups: longer runs (5–10M steps), implement **ICM** (the exact
-Mario-paper method), and hit the **"noisy TV"** failure mode.
+- **First study — curiosity-driven Mario.** PPO + RND (curiosity as intrinsic
+  reward), reproducing Pathak et al. 2017. Results and analysis: `FINDINGS.md`.
+- **Phase 6 — the `GameEnv` interface.** Agent (brain) split from game (adapter):
+  `src/game_env.py` (interface + shared obs pipeline), `src/games/*` (one adapter
+  per game + registry). Adding a game is a new file, not a rewrite.
+- **Phase 7 — Atari (ALE).** Montezuma's Revenge + Breakout plug in with zero
+  training-code changes. Confirms the sparse-reward story: PPO alone gets no
+  signal on Montezuma, curiosity does. Real scores still pending compute
+  (Montezuma needs millions of steps / a GPU).
 
 ---
 
-## Going generic (the multi-game direction)
-
-### Phase 6 — Extract the `GameEnv` interface ✅ DONE
-- Split the old `mario_env.py` into a game-agnostic boundary — **pixels in,
-  discrete button out**:
-  - `src/game_env.py` — the interface: a `GameSpec` dataclass + the shared obs
-    pipeline + `make_venv(spec, n_envs)`. Never mentions Mario.
-  - `src/games/mario.py` — adapter #1 (~20 lines): how to build the raw Mario
-    env + its `progress_key`/`success_key`.
-  - `src/games/__init__.py` — a registry; every script takes `--game mario`.
-- `eval_models.py` is now generic too (uses the spec's progress/success keys).
-  Model names unchanged (`mario_ppo_final`…) so existing models still load.
-- **Adding a game is now a new file in `src/games/`, not a rewrite.**
-
-### Phase 7 — Adapter #2: Atari suite (ALE) ✅ WIRED (results pending compute)
-- `src/games/atari.py`: one `atari_spec(name, env_id)` factory → adding an Atari
-  game is a single line. First two: **Montezuma's Revenge** and **Breakout**.
-  Registered alongside Mario; `ale-py==0.11.2` pinned in `docker/requirements.txt`
-  (bundles ROMs, happy with numpy<2). No change to the training code — the
-  `GameEnv` interface paid off.
-- ALE has no `x_pos`/`flag_get`, so `GameSpec` progress/success keys are optional;
-  `eval_models.py` falls back to **episode return** for such games.
-- **Smoke-tested** (1024 steps, 2 envs): both games train through the same PPO
-  and PPO+RND code, ~1100 fps. The sparse-reward wall is already visible —
-  Montezuma gives PPO `ep_rew_mean = 0`, while pure curiosity produces a real
-  intrinsic signal (`intrinsic_mean ≈ 0.25`). This is our `FINDINGS.md`
-  takeaway #4: on Mario (dense reward) curiosity only *helps*; on Montezuma it's
-  the only signal there is.
-- ⚠️ **Real results need compute.** Montezuma is famously hard — millions of
-  steps and realistically a GPU to show the curiosity payoff. On this CPU-only
-  Mac, Breakout will give a quick clean result; Montezuma is a longer bet.
-- Note (refinement): we reuse the generic obs pipeline, not SB3's full
-  `AtariWrapper` (episodic-life / fire-reset / reward-clipping). Fine to start;
-  add per-adapter later if Atari scores stall.
+## What's next
 
 ### Phase 8 — Adapter #3: a *normal* interface (no modified emulator)
 - Generic **screen-capture + key-injection** env, pointed at the original
@@ -133,7 +84,7 @@ Mario-paper method), and hit the **"noisy TV"** failure mode.
 
 ## Suggested next step
 
-**Phase 6**: extract the `GameEnv` interface and re-express Mario as the first
-adapter behind it. Small, self-contained, and the unlock for everything after —
-Atari (Phase 7) and a screen-capture env (Phase 8) then drop in as new adapters
-instead of rewrites.
+A proper **Breakout** training run: dense reward, quick on CPU, and it proves the
+framework produces a *learning* agent on a game that isn't Mario. Then decide
+between pushing on the **generic brain** (Phase 9) and the **capture env**
+(Phase 8).

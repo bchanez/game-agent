@@ -1,15 +1,14 @@
-"""Phase 3: train PPO with curiosity (RND intrinsic reward).
+"""Train PPO with curiosity (RND intrinsic reward).
 
-    # extrinsic game reward + curiosity (the usual, strongest setup)
-    python src/train_curiosity.py --timesteps 100000
+    # game reward + curiosity (the usual, strongest setup)
+    python src/train_curiosity.py --game mario --timesteps 100000
 
-    # PURE curiosity, no game reward at all — how far does Mario get driven
-    # only by the desire to see new things? (the headline experiment)
-    python src/train_curiosity.py --timesteps 100000 --extrinsic-coef 0
+    # pure curiosity: no game reward at all, driven only by novelty
+    python src/train_curiosity.py --game montezuma --timesteps 100000 --extrinsic-coef 0
 
-`ep_rew_mean` in the logs is the reward PPO optimizes (extrinsic+intrinsic).
-The `curiosity/*` lines report the two components separately, and the true
-game score (extrinsic only) so you can tell real progress from novelty-seeking.
+`ep_rew_mean` in the logs is the reward PPO optimizes (extrinsic+intrinsic); the
+`curiosity/*` lines split the two components so you can tell real progress from
+novelty-seeking.
 """
 import argparse
 import os

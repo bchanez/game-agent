@@ -1,15 +1,13 @@
-"""Phase 2 baseline: train a PPO agent on Super Mario Bros (extrinsic reward).
+"""Train a PPO agent on a game's built-in (extrinsic) reward.
 
-No curiosity yet — this uses the game's built-in reward (move right, don't die)
-to prove the whole learning loop works before we add intrinsic motivation.
+This is the curiosity-free baseline the other setups are measured against.
 
 Run (inside the container):
-    python src/train_ppo.py --timesteps 100000
-    python src/train_ppo.py --timesteps 25000 --n-envs 1   # quick proof
+    python src/train_ppo.py --game mario --timesteps 100000
+    python src/train_ppo.py --game breakout --timesteps 25000 --n-envs 1
 
-Training is CPU-only in Docker (no GPU on Mac), so it's slow. Watch the
-`fps` and `ep_rew_mean` columns in the output; checkpoints land in
-data/models/ and TensorBoard logs in data/tb/.
+CPU-only in Docker. Checkpoints land in data/models/, TensorBoard logs in
+data/tb/.
 """
 import argparse
 import os

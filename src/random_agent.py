@@ -1,10 +1,9 @@
-"""Phase 1 sanity check: a random agent plays a game and saves a video.
+"""A random agent plays a game and saves a video.
 
-Runs any registered game's raw env with random actions. Proves the env works
-inside Docker before we invest in any training.
+Runs any registered game's raw env with random actions — a fast check that the
+env works inside Docker before investing in training.
 
 Run (inside the container):
-    python src/random_agent.py
     python src/random_agent.py --game mario
 """
 import argparse
