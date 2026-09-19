@@ -10,7 +10,8 @@ import imageio
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecTransposeImage
 
-from mario_env import make_venv
+from game_env import make_venv
+from games import get_game
 
 OUT = "/app/data/mario_ppo.mp4"
 MAX_STEPS = 3000
@@ -18,11 +19,12 @@ MAX_STEPS = 3000
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="mario", help="which game the model plays")
     ap.add_argument("--model", default="/app/data/models/mario_ppo_final.zip")
     ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
 
-    venv = make_venv(1)
+    venv = make_venv(get_game(args.game), 1)
     # SB3 auto-transposes image obs to channels-first during training, so the
     # loaded model expects that layout — replicate it here for prediction.
     venv = VecTransposeImage(venv)

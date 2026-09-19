@@ -1,58 +1,69 @@
-"""Evaluate trained models over several episodes for a fair comparison.
+"""Evaluate the three trained variants over several episodes, for a fair comparison.
 
-Reports, per model: mean / max furthest x_pos, and how often Mario reaches the
-flag (level completed). x_pos ~3200 = end of World 1-1.
+Reports, per model: mean / max progress (the game's progress_key, e.g. x_pos for
+Mario) and how often the agent "wins" (the game's success_key, e.g. reaching the
+flag). x_pos ~3200 = end of Mario World 1-1.
 
     python src/eval_models.py --episodes 10
+    python src/eval_models.py --game mario --episodes 10
 """
 import argparse
+import os
 
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecTransposeImage
 
-from mario_env import make_venv
+from game_env import make_venv
+from games import get_game
 
-MODELS = {
-    "PPO baseline": "/app/data/models/mario_ppo_final.zip",
-    "PPO + curiosity": "/app/data/models/mario_curiosity_final.zip",
-    "pure curiosity": "/app/data/models/mario_pure_curiosity_final.zip",
+# The three standard variants, as <label>: <model-file suffix>.
+VARIANTS = {
+    "PPO baseline": "ppo",
+    "PPO + curiosity": "curiosity",
+    "pure curiosity": "pure_curiosity",
 }
 
 
-def evaluate(model_path, episodes, max_steps=4000):
-    venv = VecTransposeImage(make_venv(1))
+def evaluate(spec, model_path, episodes, max_steps=4000):
+    venv = VecTransposeImage(make_venv(spec, 1))
     model = PPO.load(model_path)
-    xs, flags = [], 0
+    xs, wins = [], 0
     for _ in range(episodes):
         obs = venv.reset()
         done, steps, max_x = False, 0, 0
-        got_flag = False
+        won = False
         while not done and steps < max_steps:
             action, _ = model.predict(obs, deterministic=False)
             obs, reward, dones, infos = venv.step(action)
-            max_x = max(max_x, infos[0].get("x_pos", 0))
-            got_flag = got_flag or bool(infos[0].get("flag_get", False))
+            max_x = max(max_x, infos[0].get(spec.progress_key, 0))
+            won = won or bool(infos[0].get(spec.success_key, False))
             done = bool(dones[0])
             steps += 1
         xs.append(max_x)
-        flags += int(got_flag)
+        wins += int(won)
     venv.close()
-    return np.mean(xs), np.max(xs), flags
+    return np.mean(xs), np.max(xs), wins
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="mario", help="which game to evaluate")
     ap.add_argument("--episodes", type=int, default=10)
     args = ap.parse_args()
 
-    print(f"Evaluating over {args.episodes} episodes each "
-          f"(x_pos ~3200 = end of 1-1)\n")
-    print(f"{'model':<18} {'mean x':>8} {'max x':>7} {'flags':>7}")
+    spec = get_game(args.game)
+    print(f"Evaluating {spec.name} over {args.episodes} episodes each "
+          f"(progress = {spec.progress_key}, win = {spec.success_key})\n")
+    print(f"{'model':<18} {'mean':>8} {'max':>7} {'wins':>7}")
     print("-" * 44)
-    for name, path in MODELS.items():
-        mean_x, max_x, flags = evaluate(path, args.episodes)
-        print(f"{name:<18} {mean_x:>8.0f} {max_x:>7.0f} {flags:>4}/{args.episodes}", flush=True)
+    for label, suffix in VARIANTS.items():
+        path = f"/app/data/models/{spec.name}_{suffix}_final.zip"
+        if not os.path.exists(path):
+            print(f"{label:<18} {'(no model: ' + os.path.basename(path) + ')':>22}")
+            continue
+        mean_x, max_x, wins = evaluate(spec, path, args.episodes)
+        print(f"{label:<18} {mean_x:>8.0f} {max_x:>7.0f} {wins:>4}/{args.episodes}", flush=True)
 
 
 if __name__ == "__main__":

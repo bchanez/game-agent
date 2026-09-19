@@ -18,7 +18,8 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
-from mario_env import make_venv
+from game_env import make_venv
+from games import get_game
 from rnd import RNDReward
 
 MODELS_DIR = "/app/data/models"
@@ -46,6 +47,7 @@ class CuriosityStats(BaseCallback):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="mario", help="which game to train on")
     ap.add_argument("--timesteps", type=int, default=100_000)
     ap.add_argument("--n-envs", type=int, default=1)
     ap.add_argument("--intrinsic-coef", type=float, default=1.0)
@@ -54,12 +56,13 @@ def main():
                     help="path to a .zip to continue training from (else fresh)")
     args = ap.parse_args()
 
+    spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)
     base_tag = "pure_curiosity" if args.extrinsic_coef == 0 else "curiosity"
     tag = f"{base_tag}_cont" if args.resume else base_tag
 
     venv = RNDReward(
-        make_venv(args.n_envs),
+        make_venv(spec, args.n_envs),
         intrinsic_coef=args.intrinsic_coef,
         extrinsic_coef=args.extrinsic_coef,
         device="cpu",
@@ -82,7 +85,7 @@ def main():
         )
     ckpt = CheckpointCallback(
         save_freq=max(20_000 // args.n_envs, 1),
-        save_path=MODELS_DIR, name_prefix=f"mario_{tag}",
+        save_path=MODELS_DIR, name_prefix=f"{spec.name}_{tag}",
     )
 
     print(f"Training PPO+RND ({tag}) for {args.timesteps} steps "
@@ -90,7 +93,7 @@ def main():
     model.learn(total_timesteps=args.timesteps, callback=[ckpt, CuriosityStats()],
                 reset_num_timesteps=args.resume is None)
 
-    final = os.path.join(MODELS_DIR, f"mario_{tag}_final")
+    final = os.path.join(MODELS_DIR, f"{spec.name}_{tag}_final")
     model.save(final)
     venv.save_rnd(final + ".rnd")   # save both brains together
     print(f"Saved {final}.zip (+ .rnd)", flush=True)

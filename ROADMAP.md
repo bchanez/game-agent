@@ -54,8 +54,10 @@ situations are *interesting*, not only because we hand it a reward. Reference:
 *Curiosity-driven Exploration by Self-supervised Prediction*, Pathak et al. 2017.
 
 - **Env**: `gym-super-mario-bros` (NES emulator via `nes-py`), bridged to
-  Gymnasium with **shimmy**. Obs pipeline in `src/mario_env.py`: frame-skip 4 →
-  resize 84×84 → grayscale → stack 4 (final `84×84×4`). Runs CPU-only in Docker.
+  Gymnasium with **shimmy**. Since Phase 6 it's the first adapter behind the
+  generic `GameEnv` interface (`src/games/mario.py`); the shared obs pipeline
+  (`src/game_env.py`) is frame-skip 4 → resize 84×84 → grayscale → stack 4
+  (final `84×84×4`). Runs CPU-only in Docker.
 - **Algorithm**: PPO (`CnnPolicy`, Stable-Baselines3), 8 parallel envs.
 - **Curiosity**: `src/rnd.py` — RND (Burda 2018) as a `VecEnvWrapper`; prediction
   error = intrinsic reward. `src/train_curiosity.py` trains on
@@ -77,13 +79,19 @@ Mario-paper method), and hit the **"noisy TV"** failure mode.
 
 ## Going generic (the multi-game direction)
 
-### Phase 6 — Extract the `GameEnv` interface ⏭️ NEXT
-- Refactor `src/mario_env.py` behind a small, game-agnostic boundary: **pixels
-  in, discrete button out**. Mario becomes *adapter #1*, not the whole thing.
-- Goal: adding a new game is a ~20-line adapter, not a rewrite. The PPO+RND
-  training code shouldn't know which game it's driving.
+### Phase 6 — Extract the `GameEnv` interface ✅ DONE
+- Split the old `mario_env.py` into a game-agnostic boundary — **pixels in,
+  discrete button out**:
+  - `src/game_env.py` — the interface: a `GameSpec` dataclass + the shared obs
+    pipeline + `make_venv(spec, n_envs)`. Never mentions Mario.
+  - `src/games/mario.py` — adapter #1 (~20 lines): how to build the raw Mario
+    env + its `progress_key`/`success_key`.
+  - `src/games/__init__.py` — a registry; every script takes `--game mario`.
+- `eval_models.py` is now generic too (uses the spec's progress/success keys).
+  Model names unchanged (`mario_ppo_final`…) so existing models still load.
+- **Adding a game is now a new file in `src/games/`, not a rewrite.**
 
-### Phase 7 — Adapter #2: Atari suite (ALE), incl. Montezuma's Revenge
+### Phase 7 — Adapter #2: Atari suite (ALE), incl. Montezuma's Revenge ⏭️ NEXT
 - ALE gives ~60 games behind one Gym interface → the **"multiple games"** goal
   almost for free, same PPO+RND code.
 - **Montezuma's Revenge** is *the* canonical sparse-reward game curiosity was

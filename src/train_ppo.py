@@ -17,7 +17,8 @@ import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 
-from mario_env import make_venv
+from game_env import make_venv
+from games import get_game
 
 MODELS_DIR = "/app/data/models"
 TB_DIR = "/app/data/tb"
@@ -25,22 +26,24 @@ TB_DIR = "/app/data/tb"
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="mario", help="which game to train on")
     ap.add_argument("--timesteps", type=int, default=100_000)
     ap.add_argument("--n-envs", type=int, default=1)
     ap.add_argument("--resume", default=None,
                     help="path to a .zip to continue training from (else fresh)")
     args = ap.parse_args()
 
+    spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)
-    venv = make_venv(args.n_envs)
+    venv = make_venv(spec, args.n_envs)
 
     if args.resume:
-        prefix = "mario_ppo_cont"
+        prefix = f"{spec.name}_ppo_cont"
         print(f"Resuming from {args.resume}", flush=True)
         model = PPO.load(args.resume, env=venv, device="cpu",
                          tensorboard_log=TB_DIR)
     else:
-        prefix = "mario_ppo"
+        prefix = f"{spec.name}_ppo"
         model = PPO(
             "CnnPolicy", venv, verbose=1,
             n_steps=512, batch_size=64, n_epochs=10,

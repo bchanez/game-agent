@@ -1,18 +1,18 @@
-"""Phase 1 sanity check: a random agent plays Super Mario Bros (NES).
+"""Phase 1 sanity check: a random agent plays a game and saves a video.
 
-Runs the gym-super-mario-bros environment with random actions and saves a
-video to data/. This proves the NES environment works inside Docker before
-we invest in any training.
+Runs any registered game's raw env with random actions. Proves the env works
+inside Docker before we invest in any training.
 
 Run (inside the container):
     python src/random_agent.py
+    python src/random_agent.py --game mario
 """
+import argparse
 import os
 
 import imageio
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-from nes_py.wrappers import JoypadSpace
+
+from games import get_game
 
 STEPS = 800
 OUT = "/app/data/random_agent.mp4"
@@ -35,8 +35,12 @@ def unpack_step(ret):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="mario", help="which game to run")
+    args = ap.parse_args()
+
     print("Creating env...", flush=True)
-    env = JoypadSpace(gym_super_mario_bros.make("SuperMarioBros-v0"), SIMPLE_MOVEMENT)
+    env = get_game(args.game).make_raw_env()
     print("action_space:", env.action_space, flush=True)
 
     obs = unpack_reset(env.reset())
