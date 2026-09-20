@@ -12,6 +12,8 @@ Smoke-test to a scratch path (never clobber a real model):
 
 --spr-coef 0 falls back to plain PPO (a scientific control).
 """
+import perf  # first: sets BLAS thread limits before torch/numpy import
+
 import argparse
 import copy
 import os
@@ -129,7 +131,11 @@ def main():
     ap.add_argument("--out", default=None,
                     help="output prefix (else data/models/<game>_ppo_spr_final); "
                          "use a scratch path for smoke tests")
+    ap.add_argument("--torch-threads", type=int, default=None,
+                    help="learner torch threads (default: all cores)")
     args = ap.parse_args()
+
+    perf.setup_cpu_threads(args.torch_threads)
 
     spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)

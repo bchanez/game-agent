@@ -9,6 +9,8 @@ Run (inside the container):
 CPU-only in Docker. Checkpoints land in data/models/, TensorBoard logs in
 data/tb/.
 """
+import perf  # first: sets BLAS thread limits before torch/numpy import
+
 import argparse
 import os
 
@@ -29,8 +31,11 @@ def main():
     ap.add_argument("--n-envs", type=int, default=1)
     ap.add_argument("--resume", default=None,
                     help="path to a .zip to continue training from (else fresh)")
+    ap.add_argument("--torch-threads", type=int, default=None,
+                    help="learner torch threads (default: all cores)")
     args = ap.parse_args()
 
+    perf.setup_cpu_threads(args.torch_threads)
     spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)
     venv = make_venv(spec, args.n_envs)
