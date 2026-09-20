@@ -133,6 +133,8 @@ def main():
                          "use a scratch path for smoke tests")
     ap.add_argument("--torch-threads", type=int, default=None,
                     help="learner torch threads (default: all cores)")
+    ap.add_argument("--n-epochs", type=int, default=4,
+                    help="PPO passes per rollout (lower = faster updates)")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -148,7 +150,7 @@ def main():
 
     model = PPOSPR(
         "CnnPolicy", venv, verbose=1,
-        n_steps=512, batch_size=64, n_epochs=10,
+        n_steps=512, batch_size=64, n_epochs=args.n_epochs,
         learning_rate=1e-4, gamma=0.9, gae_lambda=1.0, ent_coef=0.01,
         tensorboard_log=TB_DIR, device="cpu",
         spr_coef=args.spr_coef, spr_lr=args.spr_lr,

@@ -50,13 +50,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default="mario", help="which game to train on")
     ap.add_argument("--timesteps", type=int, default=100_000)
-    ap.add_argument("--n-envs", type=int, default=1)
+    ap.add_argument("--n-envs", type=int, default=8,
+                    help="parallel envs; throughput plateaus past ~8 on this box")
     ap.add_argument("--intrinsic-coef", type=float, default=1.0)
     ap.add_argument("--extrinsic-coef", type=float, default=1.0)
     ap.add_argument("--resume", default=None,
                     help="path to a .zip to continue training from (else fresh)")
     ap.add_argument("--torch-threads", type=int, default=None,
                     help="learner torch threads (default: all cores)")
+    ap.add_argument("--n-epochs", type=int, default=4,
+                    help="PPO passes per rollout (lower = faster updates)")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -83,7 +86,7 @@ def main():
     else:
         model = PPO(
             "CnnPolicy", venv, verbose=1,
-            n_steps=512, batch_size=64, n_epochs=10,
+            n_steps=512, batch_size=64, n_epochs=args.n_epochs,
             learning_rate=1e-4, gamma=0.9, ent_coef=0.01,
             tensorboard_log=TB_DIR, device="cpu",
         )

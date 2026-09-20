@@ -39,6 +39,32 @@ docker exec mario-jupyter bash -c "cd /app && python src/eval_models.py --game m
 ```
 Compose lives in `docker/`. See `README.md` for the VSCode tasks.
 
+## Performance (CPU, benchmarked on this box)
+
+Defaults in the training scripts are tuned for this machine (16 logical /
+8 physical cores, Mario). End-to-end PPO throughput, measured:
+
+- **`n_epochs=4`** (was 10): ~190 → ~353 steps/s (**+86%**). Biggest lever —
+  the update loop was dominated by redundant gradient passes. It's a *learning*
+  knob too, so re-validate the curve if you raise it. `--n-epochs` to override.
+- **`n_envs=8`**: throughput plateaus past 8 (4→290, 8→353, 12→363, 16→374) —
+  past 8 it's <3%/step for 2× the RAM. Collection is the floor: `nes-py` is
+  single-threaded C, so more envs ≈ more emulators, not faster ones.
+- **`torch` threads = physical cores** (via `src/perf.py`, imported *first*):
+  torch at all 16 logical CPUs oversubscribes the 8 physical → ~12% slower than
+  8. `perf.py` also caps env-worker BLAS to 1 thread. `--torch-threads` to tune.
+- **RND** trains its predictor once per rollout on minibatches (`RNDTrainCallback`),
+  not per env step — keeps the backward pass off the acting hot path.
+- Tried and **dropped**: `channels_last` memory format (no measurable gain —
+  SB3 feeds contiguous NCHW and oneDNN already handles it).
+
+**No GPU on this Mac, and it's not a config gap.** Docker Desktop runs a Linux
+VM via Hypervisor.framework, which exposes no virtual GPU; Metal/MPS has no
+container passthrough (confirmed 2026). `torch.backends.mps.is_available()` is
+`False` inside the container. The only GPU path is running *natively* on the
+host (breaks the Docker-only convention) — treat it as a deliberate, separate
+decision, not a quick win.
+
 ## ⚠️ Never clobber trained models
 
 Training scripts overwrite `data/models/<game>_<variant>_final.zip` by default,
