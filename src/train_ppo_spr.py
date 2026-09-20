@@ -1,0 +1,140 @@
+"""Train PPO with an SPR self-predictive auxiliary loss on its own CNN features.
+
+Stage B of Phase 8.5 (see spr.py / ROADMAP.md). Same PPO recipe as train_ppo.py,
+but each update also trains the shared CNN encoder to predict the next latent from
+the current latent and action. The bet: a dynamics-aware representation makes PPO
+learn *faster* (better sample-efficiency) than raw-pixel PPO.
+
+    python src/train_ppo_spr.py --game breakout --timesteps 500000 --n-envs 8
+
+Smoke-test to a scratch path (never clobber a real model):
+    python src/train_ppo_spr.py --game breakout --timesteps 25000 --out /app/data/models/_smoke
+
+--spr-coef 0 falls back to plain PPO (a scientific control).
+"""
+import argparse
+import copy
+import os
+
+import numpy as np
+import torch
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.preprocessing import preprocess_obs
+
+from game_env import make_venv
+from games import get_game
+from spr import SPRHead, ema_update
+
+MODELS_DIR = "/app/data/models"
+TB_DIR = "/app/data/tb"
+
+
+class PPOSPR(PPO):
+    def __init__(self, *args, spr_coef=1.0, spr_lr=1e-4, spr_epochs=1,
+                 spr_batch=256, spr_tau=0.01, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.spr_coef = spr_coef
+        self.spr_epochs = spr_epochs
+        self.spr_batch = spr_batch
+        self.spr_tau = spr_tau
+        if spr_coef <= 0:
+            return
+
+        feature_dim = self.policy.features_extractor.features_dim
+        self.spr_head = SPRHead(feature_dim, self.action_space.n).to(self.device)
+        # EMA copy of the encoder: the moving target that prevents collapse
+        self.target_encoder = copy.deepcopy(self.policy.features_extractor).to(self.device)
+        for p in self.target_encoder.parameters():
+            p.requires_grad_(False)
+        self.spr_optimizer = torch.optim.Adam(
+            list(self.policy.features_extractor.parameters())
+            + list(self.spr_head.parameters()),
+            lr=spr_lr,
+        )
+
+    def _features(self, obs_np, encoder):
+        obs_t = torch.as_tensor(obs_np, device=self.device)
+        prep = preprocess_obs(obs_t, self.observation_space, normalize_images=True)
+        return encoder(prep)
+
+    def _spr_update(self):
+        # must run before super().train(): rollout_buffer.get() flattens
+        # observations/actions in place, but leaves episode_starts (n_steps, n_envs)
+        buf = self.rollout_buffer
+        obs, actions = buf.observations, buf.actions      # (n_steps, n_envs, ...)
+        # a transition t->t+1 is valid only within one episode
+        mask = ~buf.episode_starts[1:].astype(bool)       # (n_steps-1, n_envs)
+        t_idx, e_idx = np.nonzero(mask)
+        if len(t_idx) == 0:
+            return
+        s_t, s_tp1 = obs[t_idx, e_idx], obs[t_idx + 1, e_idx]
+        a_t = actions[t_idx, e_idx]
+
+        self.policy.set_training_mode(True)
+        n = len(t_idx)
+        for _ in range(self.spr_epochs):
+            perm = np.random.permutation(n)
+            for start in range(0, n, self.spr_batch):
+                idx = perm[start:start + self.spr_batch]
+                z_t = self._features(s_t[idx], self.policy.features_extractor)
+                with torch.no_grad():
+                    z_tp1 = self._features(s_tp1[idx], self.target_encoder)
+                a = torch.as_tensor(a_t[idx], device=self.device)
+                loss = self.spr_coef * self.spr_head(z_t, a, z_tp1)
+                self.spr_optimizer.zero_grad()
+                loss.backward()
+                self.spr_optimizer.step()
+
+        self.spr_head.update_target(self.spr_tau)
+        ema_update(self.target_encoder, self.policy.features_extractor, self.spr_tau)
+        self.logger.record("spr/loss", float(loss.item()))
+
+    def train(self):
+        if self.spr_coef > 0:
+            self._spr_update()
+        super().train()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="breakout")
+    ap.add_argument("--timesteps", type=int, default=500_000)
+    ap.add_argument("--n-envs", type=int, default=8)
+    ap.add_argument("--spr-coef", type=float, default=1.0,
+                    help="weight of the self-predictive loss (0 = plain PPO control)")
+    ap.add_argument("--spr-lr", type=float, default=1e-4)
+    ap.add_argument("--out", default=None,
+                    help="output prefix (else data/models/<game>_ppo_spr_final); "
+                         "use a scratch path for smoke tests")
+    args = ap.parse_args()
+
+    spec = get_game(args.game)
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    venv = make_venv(spec, args.n_envs)
+
+    model = PPOSPR(
+        "CnnPolicy", venv, verbose=1,
+        n_steps=512, batch_size=64, n_epochs=10,
+        learning_rate=1e-4, gamma=0.9, gae_lambda=1.0, ent_coef=0.01,
+        tensorboard_log=TB_DIR, device="cpu",
+        spr_coef=args.spr_coef, spr_lr=args.spr_lr,
+    )
+
+    prefix = f"{spec.name}_ppo_spr"
+    ckpt = CheckpointCallback(
+        save_freq=max(20_000 // args.n_envs, 1),
+        save_path=MODELS_DIR, name_prefix=prefix,
+    )
+
+    print(f"Training PPO+SPR (coef={args.spr_coef}) for {args.timesteps} steps "
+          f"on {args.n_envs} env(s)...", flush=True)
+    model.learn(total_timesteps=args.timesteps, callback=ckpt)
+
+    final = args.out or os.path.join(MODELS_DIR, f"{prefix}_final")
+    model.save(final)
+    print(f"Saved {final}.zip", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -58,6 +58,10 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
   training-code changes. Confirms the sparse-reward story: PPO alone gets no
   signal on Montezuma, curiosity does. Real scores still pending compute
   (Montezuma needs millions of steps / a GPU).
+- **Phase 7.5 — Breakout validation run.** A proper PPO run proved the framework
+  produces a *learning* agent on a game that isn't Mario, with zero training-code
+  changes — the `GameEnv` boundary holds. 500k steps / 8 envs / ~23 min CPU:
+  `ep_rew_mean` 1.06 → 6.7 (max 7.32), `explained_variance` 0.85.
 
 ---
 
@@ -74,17 +78,37 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
 - Remaining challenges are honest engineering: capture latency and reliable
   input injection.
 
+### Phase 8.5 — Learned world model (the missing link)
+Instead of PPO's CNN re-learning to *see* from scratch on every game, learn a
+compact **latent state of the world** behind the same `GameEnv`. The agent learns
+the representation itself — no hand-coded object detection, so the *no human
+indication* principle holds. It serves **both** roadmap axes: more efficient
+(a few hundred latent numbers vs ~50k pixels) and a step toward the generic brain.
+
+- **Stage A — offline autoencoder + frozen encoder ✅ DONE.** Learn a 64-dim
+  latent per frame offline, freeze it, run PPO on the latent (`autoencoder.py`,
+  `collect_frames.py`, `train_encoder.py`, `latent_env.py`,
+  `train_ppo_latent.py`). Result on Breakout (details in `FINDINGS.md`): the
+  compact latent *does* learn and is **~3× faster** wall-clock, but underperforms
+  raw pixels (~3.0 vs ~6.7 @500k). A plain MSE loss drops the ball; a generic
+  **motion-weighted loss** recovers it. The frozen encoder (trained on
+  random-agent frames) is the ceiling — distribution shift as the policy improves.
+- **Stage B — self-predictive representation (SPR) ✅ DONE.** Fix Stage A's two
+  limits at once: learn the latent by **predicting the next latent from the
+  action** (no reconstruction, so nothing to blur away), **jointly** with the
+  policy (no freezing, no distribution shift), with an EMA target to prevent
+  collapse (`spr.py`, `train_ppo_spr.py`). Result on Breakout (details in
+  `FINDINGS.md`): **~3× more sample-efficient** than pixel PPO (reaches the
+  baseline's final score in ~176k steps vs 500k) with a **higher ceiling**
+  (~8.6 vs ~6.7). Cost: no per-step speedup (still a CNN on pixels).
+- **Stage B2 — combine A + B 💡 NEXT.** An SPR-trained latent that is *not*
+  frozen, with the policy on the compact latent (`MlpPolicy`) — aiming for Stage
+  A's ~3× speed *and* Stage B's sample-efficiency together. **DreamerV3** remains
+  the full-scale reference (one hyperparameter set across 150+ tasks) if/when a
+  GPU is available.
+
 ### Phase 9 — The "generic brain": a reasoning / VLM agent 🌫️ FRONTIER
 - On the same `GameEnv`, swap PPO for a **reasoning agent** (look at the screen,
   think, press a key) aiming to play games it *never trained on*. This is where
   **ARC-style abstract reasoning** connects — the reasoning benchmark for a
   generic agent, not a separate project.
-
----
-
-## Suggested next step
-
-A proper **Breakout** training run: dense reward, quick on CPU, and it proves the
-framework produces a *learning* agent on a game that isn't Mario. Then decide
-between pushing on the **generic brain** (Phase 9) and the **capture env**
-(Phase 8).

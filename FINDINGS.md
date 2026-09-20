@@ -73,3 +73,141 @@ pure curiosity for sparse-reward experiments — all one flag away.
 - Implement **ICM** (the exact Mario-paper method) and add it to the table.
 - Test a **sparse-reward** setting to show curiosity taking the lead.
 - Overlay the TensorBoard curves (`data/tb/`) of the three runs.
+
+---
+
+# Findings — learned latent representation (Phase 8.5, Stage A)
+
+Does a **compact learned latent** beat raw pixels as the agent's input? Stage A
+tests the simplest version: learn the representation **offline** with an
+autoencoder, **freeze** it, then run PPO on the latent.
+
+## Setup
+
+- **Game**: Breakout (fast, and we have a pixel-PPO baseline to compare against).
+- **Encoder**: conv autoencoder, single 84×84 frame → **64-dim** latent
+  (`autoencoder.py`). The 4 stacked frames are each encoded and concatenated, so
+  the policy input is **256 numbers** (vs 84×84×4 = 28k pixels) and motion is
+  preserved in latent space.
+- **Training**: 100k frames from a **random agent** (`collect_frames.py`),
+  autoencoder trained offline for 15 epochs (`train_encoder.py`), then **frozen**.
+  PPO uses an `MlpPolicy` on the latent (`latent_env.py`, `train_ppo_latent.py`).
+- All game-agnostic and behind the same `GameEnv` boundary — no training-code or
+  adapter changes.
+
+## The small-moving-object problem (and the fix)
+
+A plain MSE reconstruction loss **drops the ball**: it is ~2 pixels out of 7056,
+so ignoring it barely moves the average error while the static background is
+rendered perfectly. Low MSE, useless latent.
+
+Fix — a **motion-weighted loss**: weight each pixel by how much it changed since
+the previous frame, `w = 1 + α·|frameₜ − frameₜ₋₁|`, so moving objects become
+expensive to ignore. This is a **generic** signal ("what moved"), not game
+knowledge ("where the ball is") — the *no human indication* principle holds.
+
+| α | ball in reconstruction? |
+|---|---|
+| 0 (plain MSE) | **gone** in every frame |
+| 40 | **retained** (faint but at the right position) |
+
+## Results (Breakout, 500k steps, 8 envs, CPU)
+
+| | Pixel PPO (baseline) | **Latent PPO (Stage A)** |
+|---|--:|--:|
+| `ep_rew_mean` @500k | ~6.7 (max 7.32) | **~3.0** |
+| Wall-clock | ~23 min (~360 fps) | **~7.3 min (~1150 fps)** |
+| Policy input | 28k pixels | **256 numbers** |
+
+Latent curve: 1.9 → 3.0, still gently rising at 500k.
+
+## Key takeaways
+
+1. **A compact latent is enough to learn** — 256 numbers drive real learning
+   (1.9 → 3.0). Compression works in principle.
+2. **~3× faster wall-clock** — the `MlpPolicy` is far cheaper than a CNN, more
+   than paying back the encoder forward pass. A real win on a CPU budget.
+3. **But it underperforms raw pixels** (3.0 vs 6.7). The latent is lossy exactly
+   where it hurts: the ball is faint, so its position/velocity are imprecise.
+4. **The frozen encoder is the core limitation** — it was trained on
+   **random-agent** frames, so as PPO improves it visits states the encoder never
+   saw; the latent degrades precisely as the agent gets good, and a frozen
+   encoder cannot adapt (distribution shift).
+5. **Motion weighting is essential** for games with small, critical moving
+   objects — plain reconstruction is actively harmful there.
+
+## Ideas to push further
+
+- **Stage B (the real fix)**: a representation that is **not frozen** and is
+  **dynamics-aware** — reconstruction-free (predict the next latent from the
+  action), so it never wastes capacity redrawing pixels and keeps up with the
+  states the policy actually visits.
+- Cheaper Stage-A tweaks: bigger latent (128), collect encoder frames from a
+  trained/curious agent for better state coverage, or simply train PPO longer
+  (it had not plateaued).
+
+---
+
+# Findings — self-predictive representations (Phase 8.5, Stage B)
+
+Stage A learned the representation **offline then froze it**, which capped
+performance. Stage B keeps it **learning jointly with the policy**, and drops
+pixel reconstruction for a **self-predictive** objective (SPR): predict the next
+latent from the current latent and action. See `spr.py` for the mechanism.
+
+## Setup
+
+- **Game**: Breakout (same as Stage A, for a direct comparison).
+- **Method**: standard PPO on pixels (`CnnPolicy`) **plus** an auxiliary loss on
+  the policy's own CNN features — a BYOL-style next-latent prediction with an
+  EMA target encoder + stop-gradient to prevent collapse (`train_ppo_spr.py`,
+  `PPOSPR`). `--spr-coef 0` recovers plain PPO as a control.
+- No reconstruction, no freezing, no game-specific knowledge — the *no human
+  indication* principle holds.
+
+## Results (Breakout, 500k steps, 8 envs, CPU)
+
+| | Pixel PPO | Latent (Stage A) | **SPR (Stage B)** |
+|---|--:|--:|--:|
+| Final `ep_rew_mean` @500k | ~6.7 | ~3.0 | **~8.6** |
+| Steps to reach ~6.7 | 500k | never | **~176k** |
+| Wall-clock to reach ~6.7 | ~23 min | — | **~9 min** |
+| Total wall-clock (500k) | ~23 min | ~7 min | ~25 min |
+
+SPR curve: 0.7 → 6.5 by 176k → 8.6 at 500k.
+
+## Key takeaways
+
+1. **SPR is the clear winner** — ~3× more sample-efficient (reaches the pixel
+   baseline's *final* score in ~176k steps) and a higher ceiling (8.6 > 7.3).
+2. **Faster to a given quality in wall-clock too** — ~9 min vs ~23 min to hit
+   6.7, despite slightly lower throughput; fewer steps more than pay for the SPR
+   compute.
+3. **The two Stage-A flaws are fixed at once** — no reconstruction (nothing to
+   blur away) and no freezing (no distribution shift).
+4. **The cost vs Stage A**: no per-step speedup (still a CNN on pixels). Stage A
+   bought speed, Stage B bought efficiency — they are complementary.
+
+## Generality — a second game (Mario, 300k, matched control)
+
+Re-run on Super Mario Bros (a different engine, dense reward) with zero code
+changes — SPR vs plain PPO (`--spr-coef 0`):
+
+| Mario @300k | plain PPO | **SPR** |
+|---|--:|--:|
+| Final `ep_rew_mean` | ~2020 (plateaued ~50k) | **~2500 (still rising)** |
+
+The edge is smaller than on Breakout — Mario's dense reward means plain PPO
+already does well — but the pattern holds: SPR keeps improving where the control
+flattens. The effect is not a Breakout artefact.
+
+## Caveats
+
+- **Single seed.** Strong signal, not proof. RL is high-variance; 3 seeds would
+  harden the claim.
+
+## Next
+
+- **Combine A + B**: an SPR-trained latent that is *not* frozen, with the policy
+  running on the compact latent (`MlpPolicy`) — aiming for Stage A's ~3× speed
+  *and* Stage B's sample-efficiency at once.

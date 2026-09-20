@@ -2,7 +2,4 @@
 __pycache__/
 
 # Generated videos / rollouts / training artifacts
-data/*.mp4
-data/*.log
-data/models/
-data/tb/
+data/*
