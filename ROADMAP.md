@@ -122,3 +122,23 @@ indication* principle holds. It serves **both** roadmap axes: more efficient
   think, press a key) aiming to play games it *never trained on*. This is where
   **ARC-style abstract reasoning** connects — the reasoning benchmark for a
   generic agent, not a separate project.
+
+---
+
+## Infra note — the GPU unlock
+
+Several items above wait on the same thing: **a GPU learner**. Docker-on-Mac
+can't provide one (no Metal passthrough — see `CLAUDE.md`), so everything today
+is CPU-only and already tuned about as far as it goes (perf details in
+`CLAUDE.md`). Moving to a GPU — native MPS on this Mac, or a cloud CUDA box —
+unlocks *as a group*:
+- **Montezuma-scale compute** (millions of steps, currently the blocker on the
+  Atari sparse-reward results).
+- **The online DreamerV3-style world model** (Phase 8.5, Stage B2).
+- **MPS/CUDA training acceleration** for every existing script.
+- **Async acting/learning** (Sample Factory / IMPALA): only worth it *with* a GPU
+  learner — on CPU both phases contend for the same cores (~1.76× ceiling
+  collapses to near-nothing). It's a corollary of the GPU move, not a CPU win.
+
+So treat "get on a GPU" as one decision that opens all four, not four separate
+efforts.

@@ -62,13 +62,17 @@ class _RNDNet(nn.Module):
 
 class RNDReward(VecEnvWrapper):
     def __init__(self, venv, intrinsic_coef=1.0, extrinsic_coef=1.0,
-                 lr=1e-4, device="cpu", train_epochs=4, train_batch=256):
+                 lr=1e-4, device="cpu", train_epochs=4, train_batch=256,
+                 update_proportion=0.25):
         super().__init__(venv)
         self.intrinsic_coef = intrinsic_coef
         self.extrinsic_coef = extrinsic_coef
         self.device = torch.device(device)
         self.train_epochs = train_epochs
         self.train_batch = train_batch
+        # RND (Burda et al.) trains the predictor on a random fraction of each
+        # rollout, not all of it — enough to track novelty at a quarter the cost.
+        self.update_proportion = update_proportion
 
         self.target = _RNDNet().to(self.device).eval()
         for p in self.target.parameters():
@@ -117,9 +121,9 @@ class RNDReward(VecEnvWrapper):
             return
         data = torch.cat(self._obs_buffer, dim=0)
         self._obs_buffer = []
-        n = data.shape[0]
+        n = max(int(data.shape[0] * self.update_proportion), 1)
         for _ in range(self.train_epochs):
-            perm = torch.randperm(n, device=self.device)
+            perm = torch.randperm(data.shape[0], device=self.device)[:n]
             for start in range(0, n, self.train_batch):
                 batch = data[perm[start:start + self.train_batch]]
                 with torch.no_grad():

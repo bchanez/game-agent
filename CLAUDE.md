@@ -54,9 +54,31 @@ Defaults in the training scripts are tuned for this machine (16 logical /
   torch at all 16 logical CPUs oversubscribes the 8 physical → ~12% slower than
   8. `perf.py` also caps env-worker BLAS to 1 thread. `--torch-threads` to tune.
 - **RND** trains its predictor once per rollout on minibatches (`RNDTrainCallback`),
-  not per env step — keeps the backward pass off the acting hot path.
+  not per env step — keeps the backward pass off the acting hot path. And only on
+  a `update_proportion=0.25` fraction of the rollout (the paper's value): the
+  curiosity path goes 210 → 275 steps/s (**+31%**) for no loss of novelty signal.
+  RND itself is costly — it roughly halves plain-PPO throughput (359 → 210 at
+  proportion 1.0); the subsample buys most of that back.
+- **Latent path** (`train_ppo_latent.py`, MlpPolicy on a frozen encoder) runs
+  **~2.2×** the raw-pixel CNN (1023 vs 474 steps/s, breakout) — the encoder did
+  the expensive seeing offline. Best resource win, but needs a trained encoder,
+  so it's a separate experiment, not a drop-in. `--net-arch 128,128` is another
+  ~8% over `256,256` (marginal, and a learning trade-off — left configurable).
 - Tried and **dropped**: `channels_last` memory format (no measurable gain —
   SB3 feeds contiguous NCHW and oneDNN already handles it).
+
+**Deliberately not done (and why):**
+- *Shared feature extractor across policy/RND/SPR.* No safe room: RND's target
+  is a frozen **random** net by design (sharing it destroys the novelty signal),
+  and SPR already shares the policy CNN. The RND forwards are intrinsic, not
+  redundant.
+- *Async acting/learning (Sample Factory / IMPALA style).* Per rollout the split
+  is ~57% train / ~43% collect, so perfect overlap caps at ~1.76×. But both
+  phases are CPU-bound on the same 8 physical cores, so overlapping them just
+  trades idle for contention — realistic gain is small and possibly negative.
+  The paradigm only pays off with a **GPU learner** (actors on CPU, learner on
+  GPU, no contention), which Docker-on-Mac can't provide. Revisit only alongside
+  a native/cloud GPU move — it's a corollary of "get on a GPU", not a CPU win.
 
 **No GPU on this Mac, and it's not a config gap.** Docker Desktop runs a Linux
 VM via Hypervisor.framework, which exposes no virtual GPU; Metal/MPS has no

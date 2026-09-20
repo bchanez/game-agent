@@ -135,6 +135,8 @@ def main():
                     help="learner torch threads (default: all cores)")
     ap.add_argument("--n-epochs", type=int, default=4,
                     help="PPO passes per rollout (lower = faster updates)")
+    ap.add_argument("--rnd-update-proportion", type=float, default=0.25,
+                    help="fraction of each rollout used to train the RND predictor")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -146,7 +148,8 @@ def main():
     if curious:
         # RND only rewrites the reward, so it stacks under PPOSPR untouched
         venv = RNDReward(venv, intrinsic_coef=args.intrinsic_coef,
-                         extrinsic_coef=args.extrinsic_coef, device="cpu")
+                         extrinsic_coef=args.extrinsic_coef, device="cpu",
+                         update_proportion=args.rnd_update_proportion)
 
     model = PPOSPR(
         "CnnPolicy", venv, verbose=1,
