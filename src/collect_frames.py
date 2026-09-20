@@ -41,24 +41,26 @@ def main():
 
     buf = np.empty((args.frames, 84, 84), dtype=np.uint8)
     prev = np.empty((args.frames, 84, 84), dtype=np.uint8)
+    acts = np.empty((args.frames,), dtype=np.int64)
     n = 0
     print(f"Collecting {args.frames} frames from {spec.name} "
           f"({args.n_envs} random envs)...", flush=True)
     while n < args.frames:
         actions = [venv.action_space.sample() for _ in range(args.n_envs)]
         obs, _, _, _ = venv.step(actions)
-        # keep the latest frame and its predecessor so a motion-weighted loss can
-        # later tell what moved between the two
+        # keep each transition (prev=s_t, action, latest=s_{t+1}): prev/latest let a
+        # motion-weighted loss see what moved; the action lets an SPR loss predict it
         take = min(args.n_envs, args.frames - n)
         buf[n:n + take] = obs[..., -1][:take]
         prev[n:n + take] = obs[..., -2][:take]
+        acts[n:n + take] = np.asarray(actions)[:take]
         n += take
         if n % 10_000 < args.n_envs:
             print(f"  {n}/{args.frames}", flush=True)
 
     venv.close()
-    np.savez_compressed(out, frames=buf, prev=prev)
-    print(f"Saved {n} frames (+ prev) to {out}", flush=True)
+    np.savez_compressed(out, frames=buf, prev=prev, actions=acts)
+    print(f"Saved {n} transitions (prev/action/frame) to {out}", flush=True)
 
 
 if __name__ == "__main__":

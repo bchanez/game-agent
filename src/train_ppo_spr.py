@@ -19,11 +19,12 @@ import os
 import numpy as np
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.preprocessing import preprocess_obs
 
 from game_env import make_venv
 from games import get_game
+from rnd import RNDReward
 from spr import SPRHead, ema_update
 
 MODELS_DIR = "/app/data/models"
@@ -96,6 +97,24 @@ class PPOSPR(PPO):
         super().train()
 
 
+class CuriosityStats(BaseCallback):
+    """With RND, the reward PPO sees is extrinsic+intrinsic mixed. Log the raw
+    extrinsic separately so we can tell real game progress from novelty-seeking."""
+
+    def _on_rollout_start(self):
+        self._extr = []
+
+    def _on_step(self):
+        for info in self.locals["infos"]:
+            if "extrinsic" in info:
+                self._extr.append(info["extrinsic"])
+        return True
+
+    def _on_rollout_end(self):
+        if self._extr:
+            self.logger.record("curiosity/extrinsic_mean", float(np.mean(self._extr)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default="breakout")
@@ -104,6 +123,9 @@ def main():
     ap.add_argument("--spr-coef", type=float, default=1.0,
                     help="weight of the self-predictive loss (0 = plain PPO control)")
     ap.add_argument("--spr-lr", type=float, default=1e-4)
+    ap.add_argument("--intrinsic-coef", type=float, default=0.0,
+                    help=">0 adds RND curiosity (for sparse-reward games); composes with SPR")
+    ap.add_argument("--extrinsic-coef", type=float, default=1.0)
     ap.add_argument("--out", default=None,
                     help="output prefix (else data/models/<game>_ppo_spr_final); "
                          "use a scratch path for smoke tests")
@@ -112,6 +134,11 @@ def main():
     spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)
     venv = make_venv(spec, args.n_envs)
+    curious = args.intrinsic_coef > 0
+    if curious:
+        # RND only rewrites the reward, so it stacks under PPOSPR untouched
+        venv = RNDReward(venv, intrinsic_coef=args.intrinsic_coef,
+                         extrinsic_coef=args.extrinsic_coef, device="cpu")
 
     model = PPOSPR(
         "CnnPolicy", venv, verbose=1,
@@ -121,15 +148,16 @@ def main():
         spr_coef=args.spr_coef, spr_lr=args.spr_lr,
     )
 
-    prefix = f"{spec.name}_ppo_spr"
+    prefix = f"{spec.name}_ppo_spr" + ("_rnd" if curious else "")
     ckpt = CheckpointCallback(
         save_freq=max(20_000 // args.n_envs, 1),
         save_path=MODELS_DIR, name_prefix=prefix,
     )
 
-    print(f"Training PPO+SPR (coef={args.spr_coef}) for {args.timesteps} steps "
-          f"on {args.n_envs} env(s)...", flush=True)
-    model.learn(total_timesteps=args.timesteps, callback=ckpt)
+    callbacks = [ckpt, CuriosityStats()] if curious else ckpt
+    print(f"Training PPO+SPR (coef={args.spr_coef}, intrinsic={args.intrinsic_coef}) "
+          f"for {args.timesteps} steps on {args.n_envs} env(s)...", flush=True)
+    model.learn(total_timesteps=args.timesteps, callback=callbacks)
 
     final = args.out or os.path.join(MODELS_DIR, f"{prefix}_final")
     model.save(final)

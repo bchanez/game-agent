@@ -211,3 +211,73 @@ flattens. The effect is not a Breakout artefact.
 - **Combine A + B**: an SPR-trained latent that is *not* frozen, with the policy
   running on the compact latent (`MlpPolicy`) — aiming for Stage A's ~3× speed
   *and* Stage B's sample-efficiency at once.
+
+---
+
+# Findings — Stage B2: offline SPR latent (a dead end)
+
+Attempt: train the compact encoder with the SPR objective **offline** (on
+random-agent transitions), freeze it, run the fast MlpPolicy on the latent —
+hoping for Stage A's ~3× speed *and* a good representation (`train_encoder_spr.py`).
+
+**Result: it collapses.** Two runs:
+- Plain offline SPR → *constant collapse*: the encoder maps everything to a
+  near-constant, the SPR loss trivially hits 0, latent std ~0.01.
+- + a VICReg variance term → the constant-collapse is gone but the scale
+  explodes (std ~40) and the loss is still ~0: an *informational* collapse (a
+  trivially-predictable, useless latent).
+
+**Why:** SPR asks the latent to be *predictable*, not *useful*. In Stage B it
+worked because PPO's RL loss anchored "useful"; offline there is no such anchor,
+so SPR degenerates. Even stabilized, a frozen encoder trained on random-agent
+states would keep Stage A's distribution-shift problem.
+
+**Takeaway:** the frozen-offline SPR latent is a dead end. The real B2 is
+**online** — the encoder trained by SPR *jointly* with PPO, the RL loss as the
+anchor. Kept as a documented negative result.
+
+---
+
+# Findings — SPR + curiosity (sparse / no reward)
+
+Does SPR also help when the agent has *no game reward* and explores by curiosity
+alone? SPR composes with RND (`train_ppo_spr.py --intrinsic-coef`); we compare
+against a curiosity-only control (`--spr-coef 0`).
+
+## Montezuma's Revenge (500k, CPU) — inconclusive
+
+Both SPR+curiosity and curiosity-only stayed at **0 extrinsic score throughout**;
+episode length wandered ~300–570 for both, no differentiator. Montezuma needs
+~100M+ frames (the RND papers); 500k on CPU is ~0.5% of that — far too little to
+reach the first key. **Not that SPR fails here — the budget can't test it.**
+
+## Mario pure-curiosity (500k, CPU) — SPR helps, modestly
+
+`--extrinsic-coef 0`: no game reward at all, only novelty. Native Mario reward (a
+progress proxy the agent is *not* optimizing) is compared:
+
+| Mario, no game reward | curiosity only | **SPR + curiosity** |
+|---|--:|--:|
+| max native reward | 2040 | **2210** |
+| final native reward | ~1920 (drifts down) | **~2100 (climbs)** |
+
+SPR explores ~8–10% further and keeps climbing where the control stalls — the
+same "goes further, doesn't stagnate" pattern seen with rewards, now across four
+settings (Breakout, Mario-reward, Mario-no-reward). This supports carrying SPR
+into Phase 8 (unmodified games, no reward).
+
+## Caveats (read before trusting the numbers)
+
+- **Training metric, not eval.** The Mario numbers are *training* `ep_rew_mean`
+  (shaped reward), **not** eval `x_pos`. They compare SPR vs control against each
+  other only — they are **not** comparable to the "x~1834" eval figure of the
+  first study.
+- **VecMonitor sits under the RND wrapper**, so `ep_rew_mean` always logs the
+  *native* game reward (pre-curiosity), not what PPO optimizes. This is why
+  Montezuma reads 0, and why Mario-no-reward is measurable at all.
+- **Intrinsic reward was not logged** for these runs — we only know extrinsic=0
+  on Montezuma, not what curiosity actually did. Log `intrinsic_mean` next time.
+- **Single seed; timings indicative** (shared machine). Horizons differ across
+  experiments (Mario-with-reward was 300k, the others 500k).
+- **SPR checkpoints are ~68M** (vs 20M pixel / 3.1M latent): `PPOSPR` serializes
+  the SPR head + target encoder + optimizer into the save.

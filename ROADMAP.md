@@ -101,11 +101,21 @@ indication* principle holds. It serves **both** roadmap axes: more efficient
   `FINDINGS.md`): **~3× more sample-efficient** than pixel PPO (reaches the
   baseline's final score in ~176k steps vs 500k) with a **higher ceiling**
   (~8.6 vs ~6.7). Cost: no per-step speedup (still a CNN on pixels).
-- **Stage B2 — combine A + B 💡 NEXT.** An SPR-trained latent that is *not*
-  frozen, with the policy on the compact latent (`MlpPolicy`) — aiming for Stage
-  A's ~3× speed *and* Stage B's sample-efficiency together. **DreamerV3** remains
-  the full-scale reference (one hyperparameter set across 150+ tasks) if/when a
-  GPU is available.
+- **Stage B2 — combine A + B.** Goal: an SPR-trained latent driving the fast
+  MlpPolicy — Stage A's ~3× speed *and* Stage B's sample-efficiency together.
+  - *Offline probe ✅ tried, dead end* (details in `FINDINGS.md`): training the
+    encoder with SPR offline then freezing it **collapses** (no RL loss to anchor
+    "useful", only "predictable"). A VICReg variance term stops the constant
+    collapse but the frozen latent is still degenerate.
+  - *Real path 💡 NEXT — online*: train the encoder by SPR **jointly** with PPO
+    (RL loss as the anchor), policy on the compact latent, encoder updated slowly
+    to keep the observation roughly stationary. **DreamerV3** remains the
+    full-scale reference (one hyperparameter set across 150+ tasks) if/when a GPU
+    is available.
+- **SPR + curiosity ✅ validated (sparse / no-reward).** SPR composes with RND
+  (`--intrinsic-coef`). On Mario *pure curiosity* (no game reward) SPR explores
+  ~10% further than curiosity alone; Montezuma at 500k/CPU was inconclusive (too
+  little compute). Supports carrying SPR into Phase 8, where games give no reward.
 
 ### Phase 9 — The "generic brain": a reasoning / VLM agent 🌫️ FRONTIER
 - On the same `GameEnv`, swap PPO for a **reasoning agent** (look at the screen,
