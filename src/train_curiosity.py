@@ -19,7 +19,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
 from game_env import make_venv
 from games import get_game
-from rnd import RNDReward
+from rnd import RNDReward, RNDTrainCallback
 
 MODELS_DIR = "/app/data/models"
 TB_DIR = "/app/data/tb"
@@ -89,7 +89,8 @@ def main():
 
     print(f"Training PPO+RND ({tag}) for {args.timesteps} steps "
           f"[intrinsic={args.intrinsic_coef}, extrinsic={args.extrinsic_coef}]", flush=True)
-    model.learn(total_timesteps=args.timesteps, callback=[ckpt, CuriosityStats()],
+    model.learn(total_timesteps=args.timesteps,
+                callback=[ckpt, CuriosityStats(), RNDTrainCallback(venv)],
                 reset_num_timesteps=args.resume is None)
 
     final = os.path.join(MODELS_DIR, f"{spec.name}_{tag}_final")

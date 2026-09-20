@@ -24,7 +24,7 @@ from stable_baselines3.common.preprocessing import preprocess_obs
 
 from game_env import make_venv
 from games import get_game
-from rnd import RNDReward
+from rnd import RNDReward, RNDTrainCallback
 from spr import SPRHead, ema_update
 
 MODELS_DIR = "/app/data/models"
@@ -154,7 +154,7 @@ def main():
         save_path=MODELS_DIR, name_prefix=prefix,
     )
 
-    callbacks = [ckpt, CuriosityStats()] if curious else ckpt
+    callbacks = [ckpt, CuriosityStats(), RNDTrainCallback(venv)] if curious else ckpt
     print(f"Training PPO+SPR (coef={args.spr_coef}, intrinsic={args.intrinsic_coef}) "
           f"for {args.timesteps} steps on {args.n_envs} env(s)...", flush=True)
     model.learn(total_timesteps=args.timesteps, callback=callbacks)

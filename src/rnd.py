@@ -17,6 +17,7 @@ Set extrinsic_coef=0 for the "pure curiosity" experiment.
 import numpy as np
 import torch
 import torch.nn as nn
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnvWrapper
 
 
@@ -61,11 +62,13 @@ class _RNDNet(nn.Module):
 
 class RNDReward(VecEnvWrapper):
     def __init__(self, venv, intrinsic_coef=1.0, extrinsic_coef=1.0,
-                 lr=1e-4, device="cpu"):
+                 lr=1e-4, device="cpu", train_epochs=4, train_batch=256):
         super().__init__(venv)
         self.intrinsic_coef = intrinsic_coef
         self.extrinsic_coef = extrinsic_coef
         self.device = torch.device(device)
+        self.train_epochs = train_epochs
+        self.train_batch = train_batch
 
         self.target = _RNDNet().to(self.device).eval()
         for p in self.target.parameters():
@@ -76,6 +79,10 @@ class RNDReward(VecEnvWrapper):
         # obs pixels are normalized per-pixel; intrinsic reward by its running std
         self.obs_rms = RunningMeanStd(shape=(1, 84, 84))
         self.rew_rms = RunningMeanStd(shape=())
+
+        # frames seen since the last predictor update; drained by train_predictor
+        # so the backward pass stays off the env-stepping hot path.
+        self._obs_buffer = []
 
     def reset(self):
         return self.venv.reset()
@@ -91,19 +98,37 @@ class RNDReward(VecEnvWrapper):
 
     def _curiosity(self, obs):
         x = self._prep(obs)
+        # forward only: reward is cheap and stays on the acting hot path; the
+        # predictor's backward pass is deferred to train_predictor (per rollout).
         with torch.no_grad():
             target_feat = self.target(x)
-        pred_feat = self.predictor(x)
-        # per-sample error = intrinsic reward (measured before we update)
+            pred_feat = self.predictor(x)
         error = (pred_feat - target_feat).pow(2).mean(dim=1)
-        # train the predictor to catch up on what it just saw
-        self.optimizer.zero_grad()
-        error.mean().backward()
-        self.optimizer.step()
+        self._obs_buffer.append(x)
 
-        intr = error.detach().cpu().numpy()
+        intr = error.cpu().numpy()
         self.rew_rms.update(intr)
         return intr / np.sqrt(self.rew_rms.var + 1e-8)
+
+    def train_predictor(self):
+        """Fit the predictor on everything seen since the last call, in
+        shuffled minibatches. Runs once per PPO rollout, not once per step."""
+        if not self._obs_buffer:
+            return
+        data = torch.cat(self._obs_buffer, dim=0)
+        self._obs_buffer = []
+        n = data.shape[0]
+        for _ in range(self.train_epochs):
+            perm = torch.randperm(n, device=self.device)
+            for start in range(0, n, self.train_batch):
+                batch = data[perm[start:start + self.train_batch]]
+                with torch.no_grad():
+                    target_feat = self.target(batch)
+                pred_feat = self.predictor(batch)
+                loss = (pred_feat - target_feat).pow(2).mean()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
 
     def step_wait(self):
         obs, rews, dones, infos = self.venv.step_wait()
@@ -133,3 +158,21 @@ class RNDReward(VecEnvWrapper):
         self.optimizer.load_state_dict(ck["optimizer"])
         self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count = ck["obs_rms"]
         self.rew_rms.mean, self.rew_rms.var, self.rew_rms.count = ck["rew_rms"]
+
+
+class RNDTrainCallback(BaseCallback):
+    """Trains the RND predictor once per rollout, after collection.
+
+    Kept separate from reward computation so the predictor's backward pass
+    never blocks env stepping — the main speed win over per-step training.
+    """
+
+    def __init__(self, rnd):
+        super().__init__()
+        self._rnd = rnd
+
+    def _on_step(self):
+        return True
+
+    def _on_rollout_end(self):
+        self._rnd.train_predictor()
