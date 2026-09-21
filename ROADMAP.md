@@ -66,10 +66,12 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
   space to a fixed canonical controller (`CANONICAL_ACTIONS`, `Discrete(14)`, one
   map per adapter) so a single SPR policy can train on a mix (`make_multi_venv`,
   per-env reward normalization). An SPR policy pretrained on `{mario, montezuma}`
-  learns held-out **Breakout ~15–25× faster** than from scratch (reaches
-  `ep_rew_mean ≥ 2.5` in ~4–8k vs ~82–139k steps), same ceiling — positive
-  transfer across dissimilar games, **confirmed across 3 seeds**. Details:
-  `FINDINGS.md`.
+  learns held-out **Breakout ~15–25× faster** than from scratch (3 seeds), and a
+  single joint policy **plays both Mario and Breakout at specialist level**. But
+  weight transfer is **asymmetric** — *negative* into Mario (a conflicting
+  behavioral prior: shared action index, unshared semantics). Shared
+  representation helps; naive policy transfer carries game-specific behavior.
+  Details: `FINDINGS.md`.
 
 ---
 

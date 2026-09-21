@@ -346,13 +346,54 @@ effect (transfer starts ~2.3–2.6 at 4k vs scratch's variable ~1.4–2.4). Ceil
 is the same both ways (max ~2.5–2.8); scratch even edges slightly higher by 150k.
 Transfer accelerates learning, it doesn't raise the plateau.
 
+## Joint competence — one policy plays both (Exp A)
+
+Beyond transfer: can a *single* policy trained on a mix actually *play* each
+game as well as a dedicated specialist? Trained one SPR policy on
+`{mario, breakout}` (300k) and evaluated it per game against single-game
+specialists (300k each, 10 episodes):
+
+| policy | mario (x_pos) | breakout (return) |
+|---|--:|--:|
+| **joint** | mean 1673, max 3161, 1/10 flags | mean 2, max 3 |
+| mario specialist | mean 1681, max 2019, 0/10 | — |
+| breakout specialist | — | mean 3, max 5 |
+
+**The joint policy matches the specialists** — equal-or-better on Mario (same
+mean, higher max, reached the flag once), on par on Breakout. This is the core
+Level-2 claim: one brain, several games. (Breakout scores are low both ways —
+300k is early, and the 14-action space slows Breakout: more useless actions to
+explore than its native 4.)
+
+## Transfer is asymmetric — a negative case (Exp B)
+
+Second held-out, the reverse direction: pretrain `{breakout, montezuma}` →
+learn Mario (150k, 3 seeds), vs from scratch.
+
+| condition | start | steps to 800 | final | max |
+|---|--:|--:|--:|--:|
+| transfer | 434 | 8–20k | ~1740 | ~1740 |
+| from-scratch | 904–1600 | ~4k | ~1980 | ~2050 |
+
+**Transfer into Mario is *negative*** — worse start, slower, lower ceiling than
+scratch. The opposite of the Breakout result. Two reasons: (1) Mario's dense,
+well-aligned reward learns fast alone (little room to help); (2) the transferred
+init carries a **misaligned behavioral prior** — the shared action index `1 =
+{A}` is *FIRE* in Breakout but *jump* in Mario, so a Breakout-trained policy
+that favored action 1 jumps in place instead of advancing (start 434, below
+random init). The action *index* is shared; the *semantics* are not.
+
+## Verdict
+
+1. **Shared representation is good** → one policy plays several games (Exp A).
+2. **Weight transfer is asymmetric** → positive into a slow-to-bootstrap target
+   (Breakout, ~15–25×), negative into a fast, dense-reward target with a
+   conflicting prior (Mario). Naive policy transfer carries game-specific
+   behavior, not just useful features.
+
 ## Caveats
 
-- **Short horizon** (150k), low absolute reward (early CnnPolicy Breakout). The
-  transfer/scratch *ratio* is the result, not the absolute values.
-- **Transfer curves are flat** (start near their own plateau and barely climb) —
-  the warm start is real, but there's a hint the transferred init also caps early
-  exploration. Worth watching over a longer horizon.
-- One held-out game only. Next: a second *measurable* held-out (Mario, dense) to
-  generalize beyond Breakout. Montezuma (sparse) stays ~0 reward at 150k/CPU, so
-  it can't be measured by return in this budget.
+- **Short horizon**, single seed for Exp A; Breakout absolute scores low at 300k.
+- The transfer asymmetry is a strong, mechanistic result but still n=3 on one
+  direction, n=1 pretrain per side. The *mechanism* (misaligned action prior) is
+  the durable takeaway, not the exact magnitudes.
