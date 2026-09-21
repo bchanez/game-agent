@@ -100,12 +100,17 @@ class GameSpec:
                       already exposes the canonical actions in order. May also
                       be a callable `env -> list`, to derive the map from the
                       built env (e.g. from its reported action meanings).
+        raw:          True if make_raw_env already returns a model-ready env
+                      (its own obs + action space), so the shared pixel pipeline,
+                      the d-pad ActionRemap and frame-stacking are all skipped.
+                      Used by non-pixel games (e.g. ARC-AGI-3's discrete grid).
     """
     name: str
     make_raw_env: Callable[[], gym.Env]
     progress_key: str = None
     success_key: str = None
     action_map: object = None
+    raw: bool = False
 
 
 def _obs_pipeline(env):
@@ -116,6 +121,9 @@ def _obs_pipeline(env):
 
 
 def make_single_env(spec, normalize_reward=False):
+    if spec.raw:                                   # already model-ready (e.g. ARC grid)
+        env = spec.make_raw_env()
+        return NormalizeReward(env) if normalize_reward else env
     env = spec.make_raw_env()
     action_map = spec.action_map
     if callable(action_map):                       # derive from the built env
@@ -144,7 +152,8 @@ def make_venv(spec, n_envs=1, subproc=None):
         subproc = n_envs > 1
     env_fns = [(lambda s=spec: make_single_env(s)) for _ in range(n_envs)]
     venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
-    venv = VecFrameStack(venv, 4, channels_order="last")
+    if not spec.raw:                               # grid obs needs no frame-stacking
+        venv = VecFrameStack(venv, 4, channels_order="last")
     venv = VecMonitor(venv)
     return venv
 

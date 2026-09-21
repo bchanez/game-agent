@@ -29,3 +29,8 @@ tensorboard
 # Phase 7 — Atari suite (ALE). Second adapter family behind the GameEnv
 # interface. ale-py 0.11 bundles the ROMs and is happy with the numpy<2 pin.
 ale-py==0.11.2
+
+# Phase 9 — ARC-AGI-3 (ARC Prize 2026 interactive track). The north-star target
+# (see docs/arc-agi-3.md). Needs Python ≥3.10 (hence the 3.13 bump) and coexists
+# with the numpy<2 mario pin. Arcade() fetches an anon key + games online.
+arc-agi==0.9.9
