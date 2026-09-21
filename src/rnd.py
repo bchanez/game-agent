@@ -20,6 +20,8 @@ import torch.nn as nn
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnvWrapper
 
+from nets import is_grid_space
+
 
 class RunningMeanStd:
     """Online mean/variance (Welford), used to normalize obs and rewards."""
@@ -44,20 +46,24 @@ class RunningMeanStd:
 
 
 class _RNDNet(nn.Module):
-    """Small Nature-style CNN mapping an 84x84 single frame to an embedding."""
+    """Small Nature-style CNN mapping a frame to an embedding. Channels and
+    resolution come from the obs (1x84x84 for stacked-frame images, Cx64x64 for
+    ARC grids), so the flatten dim is measured, not hardcoded."""
 
-    def __init__(self, out_dim=256):
+    def __init__(self, in_channels=1, hw=84, out_dim=256):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(1, 32, 8, stride=4), nn.ReLU(),
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 8, stride=4), nn.ReLU(),
             nn.Conv2d(32, 64, 4, stride=2), nn.ReLU(),
             nn.Conv2d(64, 64, 3, stride=1), nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(64 * 7 * 7, out_dim),
         )
+        with torch.no_grad():
+            n_flat = self.conv(torch.zeros(1, in_channels, hw, hw)).shape[1]
+        self.head = nn.Linear(n_flat, out_dim)
 
     def forward(self, x):
-        return self.net(x)
+        return self.head(self.conv(x))
 
 
 class RNDReward(VecEnvWrapper):
@@ -74,14 +80,21 @@ class RNDReward(VecEnvWrapper):
         # rollout, not all of it — enough to track novelty at a quarter the cost.
         self.update_proportion = update_proportion
 
-        self.target = _RNDNet().to(self.device).eval()
+        # image obs (n,H,W,stack) → distill a single latest frame (1,H,W); grid obs
+        # (n,C,H,W) → distill all channels. Sizing off the obs space keeps RND
+        # game-agnostic (Mario/Atari pixels *or* an ARC grid).
+        self._grid = is_grid_space(venv.observation_space)
+        shape = venv.observation_space.shape
+        in_ch, hw = (shape[0], shape[1]) if self._grid else (1, shape[0])
+
+        self.target = _RNDNet(in_ch, hw).to(self.device).eval()
         for p in self.target.parameters():
             p.requires_grad_(False)
-        self.predictor = _RNDNet().to(self.device)
+        self.predictor = _RNDNet(in_ch, hw).to(self.device)
         self.optimizer = torch.optim.Adam(self.predictor.parameters(), lr=lr)
 
-        # obs pixels are normalized per-pixel; intrinsic reward by its running std
-        self.obs_rms = RunningMeanStd(shape=(1, 84, 84))
+        # obs normalized per-cell; intrinsic reward by its running std
+        self.obs_rms = RunningMeanStd(shape=(in_ch, hw, hw))
         self.rew_rms = RunningMeanStd(shape=())
 
         # frames seen since the last predictor update; drained by train_predictor
@@ -92,9 +105,11 @@ class RNDReward(VecEnvWrapper):
         return self.venv.reset()
 
     def _prep(self, obs):
-        # obs: (n, 84, 84, 4) uint8 channels-last -> use the latest frame only
-        frame = obs[..., -1:].astype(np.float32)          # (n,84,84,1)
-        frame = np.transpose(frame, (0, 3, 1, 2))         # (n,1,84,84)
+        if self._grid:
+            frame = obs.astype(np.float32)                # (n,C,H,W) already
+        else:
+            frame = obs[..., -1:].astype(np.float32)      # (n,H,W,1) latest frame
+            frame = np.transpose(frame, (0, 3, 1, 2))     # (n,1,H,W)
         self.obs_rms.update(frame)
         norm = (frame - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + 1e-8)
         norm = np.clip(norm, -5.0, 5.0)

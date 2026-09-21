@@ -26,6 +26,7 @@ from stable_baselines3.common.preprocessing import preprocess_obs
 
 from game_env import make_multi_venv, make_venv
 from games import get_game, get_games
+from nets import policy_kwargs_for
 from rnd import RNDReward, RNDTrainCallback
 from spr import SPRHead, ema_update
 
@@ -170,6 +171,7 @@ def main():
         learning_rate=1e-4, gamma=0.9, gae_lambda=1.0, ent_coef=0.01,
         tensorboard_log=TB_DIR, device="cpu", seed=args.seed,
         spr_coef=args.spr_coef, spr_lr=args.spr_lr,
+        policy_kwargs=policy_kwargs_for(venv.observation_space),
     )
 
     if args.init_from:
