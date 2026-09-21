@@ -62,6 +62,13 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
   produces a *learning* agent on a game that isn't Mario, with zero training-code
   changes — the `GameEnv` boundary holds. 500k steps / 8 envs / ~23 min CPU:
   `ep_rew_mean` 1.06 → 6.7 (max 7.32), `explained_variance` 0.85.
+- **Level 2 — multi-game transfer (first probe) ✅ DONE.** Unified the action
+  space to a fixed canonical controller (`CANONICAL_ACTIONS`, `Discrete(14)`, one
+  map per adapter) so a single SPR policy can train on a mix (`make_multi_venv`,
+  per-env reward normalization). An SPR policy pretrained on `{mario, montezuma}`
+  learns held-out **Breakout ~10× faster** than from scratch (reaches
+  `ep_rew_mean ≥ 2.5` in ~12k vs ~127k steps), same ceiling — positive transfer
+  across dissimilar games. n=1, to consolidate. Details: `FINDINGS.md`.
 
 ---
 

@@ -24,8 +24,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.preprocessing import preprocess_obs
 
-from game_env import make_venv
-from games import get_game
+from game_env import make_multi_venv, make_venv
+from games import get_game, get_games
 from rnd import RNDReward, RNDTrainCallback
 from spr import SPRHead, ema_update
 
@@ -120,6 +120,12 @@ class CuriosityStats(BaseCallback):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default="breakout")
+    ap.add_argument("--games", default=None,
+                    help="comma-separated list to train ONE policy on a mix of "
+                         "games (overrides --game); e.g. 'mario,montezuma'")
+    ap.add_argument("--init-from", default=None,
+                    help="load policy weights from this model.zip before training "
+                         "(measures transfer: pretrain on games A,B -> learn C)")
     ap.add_argument("--timesteps", type=int, default=500_000)
     ap.add_argument("--n-envs", type=int, default=8)
     ap.add_argument("--spr-coef", type=float, default=1.0,
@@ -141,9 +147,14 @@ def main():
 
     perf.setup_cpu_threads(args.torch_threads)
 
-    spec = get_game(args.game)
     os.makedirs(MODELS_DIR, exist_ok=True)
-    venv = make_venv(spec, args.n_envs)
+    if args.games:
+        names = [n.strip() for n in args.games.split(",") if n.strip()]
+        venv = make_multi_venv(get_games(names), args.n_envs)
+        game_label = "+".join(names)
+    else:
+        venv = make_venv(get_game(args.game), args.n_envs)
+        game_label = args.game
     curious = args.intrinsic_coef > 0
     if curious:
         # RND only rewrites the reward, so it stacks under PPOSPR untouched
@@ -159,7 +170,14 @@ def main():
         spr_coef=args.spr_coef, spr_lr=args.spr_lr,
     )
 
-    prefix = f"{spec.name}_ppo_spr" + ("_rnd" if curious else "")
+    if args.init_from:
+        src = PPO.load(args.init_from, device="cpu")
+        model.policy.load_state_dict(src.policy.state_dict())
+        if model.spr_coef > 0:  # restart the EMA target aligned with the transferred encoder
+            model.target_encoder.load_state_dict(model.policy.features_extractor.state_dict())
+        print(f"Initialized policy from {args.init_from}", flush=True)
+
+    prefix = f"{game_label}_ppo_spr" + ("_rnd" if curious else "")
     ckpt = CheckpointCallback(
         save_freq=max(20_000 // args.n_envs, 1),
         save_path=MODELS_DIR, name_prefix=prefix,

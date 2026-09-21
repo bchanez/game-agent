@@ -15,15 +15,54 @@ The shared observation pipeline is the classic Atari/Mario recipe:
 This pipeline is game-agnostic, so it lives here *once*. Adding a new game is a
 new `GameSpec`, not a new pipeline.
 """
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Callable, List
 
 import gymnasium as gym
-from gymnasium.wrappers import GrayscaleObservation, ResizeObservation
+from gymnasium.wrappers import GrayscaleObservation, NormalizeReward, ResizeObservation
 from stable_baselines3.common.atari_wrappers import MaxAndSkipEnv
 from stable_baselines3.common.vec_env import (
     DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor,
 )
+
+
+# The canonical controller: NES d-pad + two buttons (A = jump/fire, B =
+# run/secondary), a superset of every console we target. A single policy can
+# only transfer a learned action head across games if output k means the *same*
+# button combo in every game — so the index below is fixed, and each adapter
+# maps it to its own raw action (a combo it can't do -> its local NOOP). This is
+# what lets several games share one Discrete(N) head in a mixed vec-env.
+CANONICAL_ACTIONS = [
+    frozenset(),                    # 0  NOOP
+    frozenset({"A"}),               # 1  jump / fire
+    frozenset({"B"}),               # 2  run / secondary
+    frozenset({"right"}),           # 3
+    frozenset({"right", "A"}),      # 4
+    frozenset({"right", "B"}),      # 5
+    frozenset({"right", "A", "B"}), # 6
+    frozenset({"left"}),            # 7
+    frozenset({"left", "A"}),       # 8
+    frozenset({"left", "B"}),       # 9
+    frozenset({"up"}),              # 10
+    frozenset({"down"}),            # 11
+    frozenset({"up", "A"}),         # 12
+    frozenset({"down", "A"}),       # 13
+]
+N_ACTIONS = len(CANONICAL_ACTIONS)
+
+
+class ActionRemap(gym.ActionWrapper):
+    """Exposes the shared `Discrete(N_ACTIONS)` head and translates each canonical
+    action id to this game's local raw action, so every game speaks the same
+    action language and can share one policy in a mixed vec-env."""
+
+    def __init__(self, env, action_map):
+        super().__init__(env)
+        self._map = action_map
+        self.action_space = gym.spaces.Discrete(N_ACTIONS)
+
+    def action(self, action):
+        return self._map[int(action)]
 
 
 class RgbCapture(gym.Wrapper):
@@ -55,11 +94,15 @@ class GameSpec:
                       then falls back to episode return.
         success_key:  info-dict key that flags an episode as "won" (for eval).
                       None if the game has no explicit win condition.
+        action_map:   canonical id -> local raw-env action index (see
+                      CANONICAL_ACTIONS). None means identity — the raw env
+                      already exposes the canonical actions in order.
     """
     name: str
     make_raw_env: Callable[[], gym.Env]
     progress_key: str = None
     success_key: str = None
+    action_map: List[int] = None
 
 
 def _obs_pipeline(env):
@@ -69,10 +112,19 @@ def _obs_pipeline(env):
     return env
 
 
-def make_single_env(spec):
+def make_single_env(spec, normalize_reward=False):
     env = spec.make_raw_env()
+    action_map = spec.action_map or list(range(N_ACTIONS))
+    env = ActionRemap(env, action_map)
     env = RgbCapture(env)          # keep raw frame for videos
-    return _obs_pipeline(env)
+    env = _obs_pipeline(env)
+    if normalize_reward:
+        # each env normalizes its own reward by the std of its discounted
+        # returns. Per-env (not global VecNormalize) so mixed games — Breakout
+        # ~units, Mario ~thousands — reach comparable scale, making a single
+        # shared value head learnable. Generic, no per-game constants.
+        env = NormalizeReward(env)
+    return env
 
 
 def make_venv(spec, n_envs=1, subproc=None):
@@ -86,6 +138,26 @@ def make_venv(spec, n_envs=1, subproc=None):
     if subproc is None:
         subproc = n_envs > 1
     env_fns = [(lambda s=spec: make_single_env(s)) for _ in range(n_envs)]
+    venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
+    venv = VecFrameStack(venv, 4, channels_order="last")
+    venv = VecMonitor(venv)
+    return venv
+
+
+def make_multi_venv(specs, n_envs=8, subproc=None, normalize_reward=True):
+    """One vec-env mixing several games behind a single policy — the substrate
+    for a multi-game agent. Obs (84x84x1) and actions (Discrete(N_ACTIONS)) are
+    already unified per game, so a SubprocVecEnv happily runs the mix.
+
+    n_envs is the *total* number of workers (kept at the tuned sweet spot ~8),
+    distributed round-robin across `specs` — not n_envs per game, which would
+    blow up RAM. VecMonitor sits above per-env NormalizeReward, so logged
+    `ep_rew_mean` is normalized; use eval on raw envs for true performance.
+    """
+    if subproc is None:
+        subproc = n_envs > 1
+    chosen = [specs[i % len(specs)] for i in range(n_envs)]
+    env_fns = [(lambda s=s: make_single_env(s, normalize_reward)) for s in chosen]
     venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
     venv = VecFrameStack(venv, 4, channels_order="last")
     venv = VecMonitor(venv)

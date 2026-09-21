@@ -16,3 +16,11 @@ def get_game(name):
             f"unknown game '{name}'. available: {', '.join(sorted(REGISTRY))}"
         )
     return REGISTRY[name]
+
+
+def get_games(names):
+    """Resolve a comma-separated list (or iterable) of game names to specs,
+    for training one policy on a mix of games."""
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    return [get_game(n) for n in names]
