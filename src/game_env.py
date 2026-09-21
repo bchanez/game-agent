@@ -19,10 +19,11 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import gymnasium as gym
+import numpy as np
 from gymnasium.wrappers import GrayscaleObservation, NormalizeReward, ResizeObservation
 from stable_baselines3.common.atari_wrappers import MaxAndSkipEnv
 from stable_baselines3.common.vec_env import (
-    DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor,
+    DummyVecEnv, SubprocVecEnv, VecEnvWrapper, VecFrameStack, VecMonitor,
 )
 
 
@@ -146,6 +147,59 @@ def make_venv(spec, n_envs=1, subproc=None):
     venv = VecFrameStack(venv, 4, channels_order="last")
     venv = VecMonitor(venv)
     return venv
+
+
+class VecPrevActionReward(VecEnvWrapper):
+    """RL² conditioning: fold the previous action (one-hot) and previous reward
+    into each observation, turning it into a Dict{image, prev_action, prev_reward}.
+
+    This is the ingredient that separates meta-RL from "just add an LSTM": a
+    recurrent policy can only *adapt in-context* to an unknown game if it sees the
+    consequence of its own actions — the reward it just earned. Sits above
+    VecFrameStack so only the image is stacked, and zeroes the carried
+    action/reward at each episode boundary so a fresh episode starts blank.
+
+    The reward fed in is whatever the wrapped venv emits (with the multi-game mix
+    that is the per-env NormalizeReward output — homogeneous scale across games,
+    which is exactly what a single shared input wants)."""
+
+    def __init__(self, venv):
+        super().__init__(venv)
+        self.observation_space = gym.spaces.Dict({
+            "image": venv.observation_space,
+            "prev_action": gym.spaces.Box(0.0, 1.0, (N_ACTIONS,), np.float32),
+            "prev_reward": gym.spaces.Box(-np.inf, np.inf, (1,), np.float32),
+        })
+        self._actions = None
+        self._prev_action = np.zeros((venv.num_envs, N_ACTIONS), np.float32)
+        self._prev_reward = np.zeros((venv.num_envs, 1), np.float32)
+
+    def _obs(self, image):
+        return {
+            "image": image,
+            "prev_action": self._prev_action.copy(),
+            "prev_reward": self._prev_reward.copy(),
+        }
+
+    def reset(self):
+        self._prev_action[:] = 0.0
+        self._prev_reward[:] = 0.0
+        return self._obs(self.venv.reset())
+
+    def step_async(self, actions):
+        self._actions = np.asarray(actions).astype(int)
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        image, rewards, dones, infos = self.venv.step_wait()
+        onehot = np.zeros((self.num_envs, N_ACTIONS), np.float32)
+        onehot[np.arange(self.num_envs), self._actions] = 1.0
+        self._prev_action = onehot
+        self._prev_reward = rewards.reshape(-1, 1).astype(np.float32)
+        done = dones.astype(bool)                       # boundary: step_wait already
+        self._prev_action[done] = 0.0                   # returns the next episode's
+        self._prev_reward[done] = 0.0                   # first obs -> start it blank
+        return self._obs(image), rewards, dones, infos
 
 
 def make_multi_venv(specs, n_envs=8, subproc=None, normalize_reward=True):

@@ -19,6 +19,8 @@ imageio[ffmpeg]
 # Training (Phase 2 — PPO baseline)
 # SB3 speaks Gymnasium; shimmy bridges the old-gym Mario env to Gymnasium.
 stable-baselines3==2.7.1
+# RecurrentPPO (CnnLstm / MultiInputLstm) lives in sb3-contrib — the meta-RL path.
+sb3-contrib==2.7.0
 gymnasium==1.1.1
 shimmy==2.0.0
 torch==2.8.0
