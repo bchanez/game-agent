@@ -16,7 +16,7 @@ This pipeline is game-agnostic, so it lives here *once*. Adding a new game is a
 new `GameSpec`, not a new pipeline.
 """
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Callable
 
 import gymnasium as gym
 from gymnasium.wrappers import GrayscaleObservation, NormalizeReward, ResizeObservation
@@ -96,13 +96,15 @@ class GameSpec:
                       None if the game has no explicit win condition.
         action_map:   canonical id -> local raw-env action index (see
                       CANONICAL_ACTIONS). None means identity — the raw env
-                      already exposes the canonical actions in order.
+                      already exposes the canonical actions in order. May also
+                      be a callable `env -> list`, to derive the map from the
+                      built env (e.g. from its reported action meanings).
     """
     name: str
     make_raw_env: Callable[[], gym.Env]
     progress_key: str = None
     success_key: str = None
-    action_map: List[int] = None
+    action_map: object = None
 
 
 def _obs_pipeline(env):
@@ -114,8 +116,10 @@ def _obs_pipeline(env):
 
 def make_single_env(spec, normalize_reward=False):
     env = spec.make_raw_env()
-    action_map = spec.action_map or list(range(N_ACTIONS))
-    env = ActionRemap(env, action_map)
+    action_map = spec.action_map
+    if callable(action_map):                       # derive from the built env
+        action_map = action_map(env)
+    env = ActionRemap(env, action_map or list(range(N_ACTIONS)))
     env = RgbCapture(env)          # keep raw frame for videos
     env = _obs_pipeline(env)
     if normalize_reward:

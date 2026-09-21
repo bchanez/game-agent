@@ -17,32 +17,31 @@ from game_env import CANONICAL_ACTIONS, GameSpec
 
 gym.register_envs(ale_py)
 
-# ALE's full action set (`full_action_space=True`) is a fixed 18 in this order,
-# the same for every game — so one map serves all Atari games (an unsupported
-# action is a no-op in the emulator anyway). The Atari joystick has a single
-# button, so canonical B has no equivalent: we drop it and map the residual
-# (e.g. right+B -> RIGHT, right+A+B -> RIGHTFIRE).
-_ALE = {
-    "NOOP": 0, "FIRE": 1, "UP": 2, "RIGHT": 3, "LEFT": 4, "DOWN": 5,
-    "UPRIGHT": 6, "UPLEFT": 7, "DOWNRIGHT": 8, "DOWNLEFT": 9,
-    "UPFIRE": 10, "RIGHTFIRE": 11, "LEFTFIRE": 12, "DOWNFIRE": 13,
-    "UPRIGHTFIRE": 14, "UPLEFTFIRE": 15, "DOWNRIGHTFIRE": 16, "DOWNLEFTFIRE": 17,
-}
+# Discover each game's action layout from the emulator itself: ALE reports its
+# action names (e.g. 'RIGHTFIRE') via get_action_meanings(), so we match each
+# canonical combo to a name instead of hardcoding indices. This auto-adapts to
+# any ALE game — and to a game's own minimal action set (an absent combo like
+# 'RIGHTFIRE' falls back to 'RIGHT', then NOOP). The joystick has one button, so
+# canonical B has no equivalent and is dropped.
+def _canonical_to_ale(env):
+    index = {name: i for i, name in enumerate(env.unwrapped.get_action_meanings())}
+    noop = index.get("NOOP", 0)
 
+    def resolve(combo):
+        direction = "".join(d for d in ("UP", "DOWN", "LEFT", "RIGHT") if d.lower() in combo)
+        fire = "FIRE" if "A" in combo else ""
+        for name in (direction + fire, direction, "NOOP"):
+            if name in index:
+                return index[name]
+        return noop
 
-def _to_ale(combo):
-    direction = "".join(d.upper() for d in ("UP", "DOWN", "LEFT", "RIGHT") if d.lower() in combo)
-    fire = "FIRE" if "A" in combo else ""            # A = the joystick button; B has none
-    return _ALE.get(direction + fire) or _ALE.get(direction) or _ALE["NOOP"]
-
-
-_ACTION_MAP = [_to_ale(combo) for combo in CANONICAL_ACTIONS]
+    return [resolve(combo) for combo in CANONICAL_ACTIONS]
 
 
 def atari_spec(name, env_id):
     def make_raw_env():
         return gym.make(env_id, frameskip=1, full_action_space=True)
-    return GameSpec(name=name, make_raw_env=make_raw_env, action_map=_ACTION_MAP)
+    return GameSpec(name=name, make_raw_env=make_raw_env, action_map=_canonical_to_ale)
 
 
 montezuma = atari_spec("montezuma", "ALE/MontezumaRevenge-v5")
