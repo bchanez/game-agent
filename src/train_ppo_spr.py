@@ -143,6 +143,8 @@ def main():
                     help="PPO passes per rollout (lower = faster updates)")
     ap.add_argument("--rnd-update-proportion", type=float, default=0.25,
                     help="fraction of each rollout used to train the RND predictor")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="RNG seed (env, torch, action sampling) for reproducible runs")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -166,7 +168,7 @@ def main():
         "CnnPolicy", venv, verbose=1,
         n_steps=512, batch_size=64, n_epochs=args.n_epochs,
         learning_rate=1e-4, gamma=0.9, gae_lambda=1.0, ent_coef=0.01,
-        tensorboard_log=TB_DIR, device="cpu",
+        tensorboard_log=TB_DIR, device="cpu", seed=args.seed,
         spr_coef=args.spr_coef, spr_lr=args.spr_lr,
     )
 

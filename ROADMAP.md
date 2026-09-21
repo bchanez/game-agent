@@ -66,9 +66,10 @@ the game; it figures the rest out. (This is why we deleted the OpenCV
   space to a fixed canonical controller (`CANONICAL_ACTIONS`, `Discrete(14)`, one
   map per adapter) so a single SPR policy can train on a mix (`make_multi_venv`,
   per-env reward normalization). An SPR policy pretrained on `{mario, montezuma}`
-  learns held-out **Breakout ~10× faster** than from scratch (reaches
-  `ep_rew_mean ≥ 2.5` in ~12k vs ~127k steps), same ceiling — positive transfer
-  across dissimilar games. n=1, to consolidate. Details: `FINDINGS.md`.
+  learns held-out **Breakout ~15–25× faster** than from scratch (reaches
+  `ep_rew_mean ≥ 2.5` in ~4–8k vs ~82–139k steps), same ceiling — positive
+  transfer across dissimilar games, **confirmed across 3 seeds**. Details:
+  `FINDINGS.md`.
 
 ---
 

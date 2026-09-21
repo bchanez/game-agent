@@ -328,11 +328,31 @@ Steps to reach `ep_rew_mean ≥ 2.5`: **transfer ~12k vs scratch ~127k (~10×)**
 4. **Validates the Level-2 direction** — one SPR policy behind `GameEnv` *does*
    transfer. The boundary earns its keep.
 
+## Consolidation (3 seeds, confirmed)
+
+Re-ran transfer vs scratch on Breakout across seeds 0/1/2 (150k each, same
+pretrained model reused for transfer). Steps to `ep_rew_mean ≥ 2.5`:
+
+| seed | transfer | from-scratch |
+|---|--:|--:|
+| 0 | 4k | 139k |
+| 1 | 8k | never (in 150k) |
+| 2 | 4k | 82k |
+
+The effect **holds and is stronger than the n=1 probe**: transfer crosses the
+threshold in **~4–8k steps every seed**, scratch in **~82–139k or not at all** —
+a **~15–25× sample-efficiency gain**, robust to seed. Warm start is the robust
+effect (transfer starts ~2.3–2.6 at 4k vs scratch's variable ~1.4–2.4). Ceiling
+is the same both ways (max ~2.5–2.8); scratch even edges slightly higher by 150k.
+Transfer accelerates learning, it doesn't raise the plateau.
+
 ## Caveats
 
-- **n=1, single seed.** Strong signal, not proof. The transfer curve is oddly
-  flat (starts near its own plateau) — consolidate with 2–3 seeds.
 - **Short horizon** (150k), low absolute reward (early CnnPolicy Breakout). The
   transfer/scratch *ratio* is the result, not the absolute values.
-- One held-out game only. Next: pretrain `{mario, breakout}` → transfer to
-  Montezuma **with curiosity**, to test transfer into a sparse-reward setting.
+- **Transfer curves are flat** (start near their own plateau and barely climb) —
+  the warm start is real, but there's a hint the transferred init also caps early
+  exploration. Worth watching over a longer horizon.
+- One held-out game only. Next: a second *measurable* held-out (Mario, dense) to
+  generalize beyond Breakout. Montezuma (sparse) stays ~0 reward at 150k/CPU, so
+  it can't be measured by return in this budget.
