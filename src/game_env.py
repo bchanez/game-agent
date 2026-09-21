@@ -194,11 +194,24 @@ class VecPrevActionReward(VecEnvWrapper):
         image, rewards, dones, infos = self.venv.step_wait()
         onehot = np.zeros((self.num_envs, N_ACTIONS), np.float32)
         onehot[np.arange(self.num_envs), self._actions] = 1.0
-        self._prev_action = onehot
-        self._prev_reward = rewards.reshape(-1, 1).astype(np.float32)
-        done = dones.astype(bool)                       # boundary: step_wait already
-        self._prev_action[done] = 0.0                   # returns the next episode's
-        self._prev_reward[done] = 0.0                   # first obs -> start it blank
+        prev_reward = rewards.reshape(-1, 1).astype(np.float32)
+        done = dones.astype(bool)
+        # auto-reset stashes the pre-reset image in infos["terminal_observation"];
+        # a recurrent policy bootstraps its value on truncation, so it must carry
+        # the same Dict shape as a live obs — else obs_to_tensor chokes on a bare
+        # array. Use the action/reward of the terminating step (pre-blanking).
+        for i in np.nonzero(done)[0]:
+            term = infos[i].get("terminal_observation")
+            if term is not None:
+                infos[i]["terminal_observation"] = {
+                    "image": term,
+                    "prev_action": onehot[i],
+                    "prev_reward": prev_reward[i],
+                }
+        self._prev_action = onehot.copy()
+        self._prev_reward = prev_reward.copy()
+        self._prev_action[done] = 0.0                   # next episode's first obs
+        self._prev_reward[done] = 0.0                   # starts blank
         return self._obs(image), rewards, dones, infos
 
 

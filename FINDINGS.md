@@ -397,3 +397,68 @@ random init). The action *index* is shared; the *semantics* are not.
 - The transfer asymmetry is a strong, mechanistic result but still n=3 on one
   direction, n=1 pretrain per side. The *mechanism* (misaligned action prior) is
   the durable takeaway, not the exact magnitudes.
+
+# Findings — meta-RL (RL²): does in-episode memory help?
+
+**Question**: Exp B showed frozen-weight transfer *regresses* on a held-out game
+when action semantics conflict (the index is shared, the meaning isn't). Meta-RL
+(RL², Duan et al. 2016) proposes a different transfer: give the policy a **memory**
+(LSTM) and feed it its own **previous action and reward**, so it can *infer which
+game it's in and adapt in-context* — no weight update. Does it beat frozen
+transfer where Exp B failed?
+
+- **Setup**: `RecurrentPPO` (sb3-contrib), `MultiInputLstmPolicy`. A
+  `VecPrevActionReward` wrapper turns the obs into `Dict{image, prev_action,
+  prev_reward}` — the RL² conditioning — above frame-stacking so only the image
+  stacks. Trained on the mix `{breakout, montezuma}` (1M steps, seed 0), the exact
+  split Exp B failed on. "Trial simple": each worker is one game, LSTM reset per
+  episode. Evaluated **frozen** on held-out **Mario** (x_pos, 20 episodes).
+
+## Result — the memory adds nothing here (matched control)
+
+| condition (Mario, frozen weights, 1M steps) | x_pos mean | max |
+|---|--:|--:|
+| **RecurrentPPO (LSTM + prev-action/reward)** | **915** | 1128 |
+| **feedforward PPO, no memory (matched control)** | **914** | 1410 |
+| Exp B — SPR transfer (150k), for reference | ~434 | — |
+| random agent | ~400 | — |
+
+**915 ≈ 914 — recurrence contributes ~0.** The gain over Exp B (~915 vs ~434) is
+real but comes from the *training regime* (1M steps of matched multi-game PPO, a
+robust "act + move right" prior), **not** from in-context adaptation. The few-shot
+curve (carry LSTM across 4 episodes) is flat too (950→901→908→960): the LSTM does
+no adaptive work. The matched control is what turned a nice-looking number into an
+honest null — without it we'd have wrongly credited the memory.
+
+## Why memory is idle here — and where it *should* pay off
+
+Memory answers "**which game am I in?**". But Mario/Breakout/Montezuma are
+**visually distinct** — one frame settles it, the CNN already disambiguates, so
+the LSTM has no residual information to add. RL² only earns its keep when the rule
+is **not readable from a single observation** (same-looking states, hidden action
+semantics that must be *probed*).
+
+That is exactly **ARC-AGI-3**: a same-looking 64×64 grid where ACTION1-4 mean
+different things per game, invisible until you act. **The Atari/Mario sandbox is
+the wrong testbed for meta-RL** — its games self-identify. So the recurrent
+infra (`VecPrevActionReward`, `train_ppo_meta.py`, `eval_meta.py`) is built and
+validated, but its value is to be demonstrated **on ARC-style hidden-rule tasks**,
+not here.
+
+## Verdict
+
+1. **Recurrence ≠ free lunch.** On visually self-identifying games, an LSTM +
+   prev-action/reward matches a plain feedforward policy (915 vs 914). Meta-RL's
+   benefit needs tasks where the rule is hidden.
+2. **Points straight at ARC-AGI-3** (step 3): native hidden-rule tasks are where
+   in-context adaptation should finally beat frozen transfer. The Python bump to
+   3.13 (done here) also clears the ARC SDK's ≥3.10 requirement.
+
+## Caveats
+
+- n=1 held-out (Mario), n=1 seed for the meta run. The *null for recurrence* is
+  the takeaway, not the exact 915. A visually-distinct held-out is arguably the
+  worst case for memory, so this doesn't rule meta-RL out — it locates its value.
+- "Trial simple" reset the LSTM per episode; a "trial canonical" run (persist
+  state across episodes) wasn't tested — but on self-identifying games it's
+  unlikely to change the verdict.
