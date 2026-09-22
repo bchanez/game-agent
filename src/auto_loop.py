@@ -42,7 +42,9 @@ def flags(cfg):
 
 
 def evaluate(game, cfg, budget, n_envs, seed, episodes, tag):
-    out = f"/app/data/models/_auto_{tag}"
+    # fixed scratch path (cleaned each candidate): a float in the name like
+    # "_auto_sil_0.0" makes SB3 mis-handle the .zip extension -> load fails
+    out = "/app/data/models/_auto_candidate"
     train = (["python", "src/train_ppo_spr.py", "--game", game, "--timesteps",
               str(budget), "--n-envs", str(n_envs), "--seed", str(seed), "--out", out]
              + flags(cfg))

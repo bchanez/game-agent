@@ -542,6 +542,84 @@ But g50t is completed far less reliably (0.05 vs 0.35) — the stack transfers
 the performance is not uniform. No game-specific tuning was used, which is the
 point.
 
+## Memory (LSTM) as an auto-selected tool — and it alone doesn't help ls20
+
+The non-Markov detector flags ls20 (a hidden "life" counter, per a play-through) and
+`--auto` now switches the toolbox to a recurrent policy (`--recurrent`, RecurrentPPO).
+But SPR/self-imitation aren't wired into the recurrent buffer yet, so this path is
+memory + curiosity *without* SIL. Result on ls20:
+
+| config (ls20, 500k) | eval levels (mean / max) |
+|---|---|
+| baseline | 0.00 |
+| **self-imitation** (non-recurrent) | **0.35 / 1** |
+| memory alone (RecurrentPPO + curiosity, no SIL) | 0.00 / 0 |
+
+**Memory alone recovers nothing — SIL is the ingredient that mattered.** Either the
+non-Markov signal is partly the held-grid artifact, or (more likely) memory has
+nothing to consolidate without SIL: no mechanism reuses the rare wins, so the LSTM
+never gets a stable success to model. The open question is whether **memory + SIL
+together** beats SIL alone (0.35) — which needs SIL wired into the recurrent path
+(sequence replay through the LSTM), a deferred build.
+
+**SIL generalizes; auto-routing to memory was premature.** SIL forced on (non-recurrent)
+on g50t reaches level 1 at **0.30** — comparable to ls20 (0.35), so SIL is a genuinely
+generic lever. But `--auto` routed g50t's non-Markov grid to the *memory* path, which
+disables SIL, scoring only **0.05**. So the configurator was picking the worse tool
+(memory-without-SIL 0.05 < SIL-without-memory 0.30). Fix: **don't auto-enable the
+recurrent path** while SIL/SPR aren't wired into it — keep SIL for grids; the
+non-Markov signal stays a logged recommendation, and `--recurrent` remains a manual
+flag. Re-enable auto-memory once SIL+recurrent exists and beats SIL alone.
+
+| ls20/g50t (sparse grid, 500k) | eval levels (mean) |
+|---|---|
+| SIL (non-recurrent) | 0.35 / 0.30 |
+| memory, no SIL (--auto, old routing) | 0.00 / 0.05 |
+
+## Memory + SIL: built, wired, and it *hurts* on ls20 — SIL alone wins
+
+SIL is now wired into the recurrent path (`RecurrentPPOSIL`, `SILMixin`): winning
+transitions are replayed with a zeroed LSTM state (a per-transition approximation of
+sequence replay). It works — the SIL buffer fills to ~3720 (more wins captured than
+feedforward SIL's ~2020). But the eval verdict on ls20 is clear:
+
+| ls20 config (500k, seed 0) | eval levels (mean / max) |
+|---|---|
+| baseline | 0.00 |
+| **SIL alone (feedforward)** | **0.35 / 1** |
+| memory alone (no SIL) | 0.00 |
+| memory + SIL | 0.05 / 1 |
+
+**Memory doesn't just fail to help — it degrades SIL (0.35 → 0.05).** The recurrent
+policy is harder to train (BPTT, more params) and the zero-state SIL approximation is
+a weaker imitation signal on a memory policy. So the non-Markov detector's "needs
+memory" recommendation for ls20 is **empirically refuted**: ls20 is completable
+without memory, and adding it hurts. This validates keeping `--auto` on the SIL path
+(memory stays a manual `--recurrent` flag, not auto-routed). The SIL+recurrent tool
+exists for games that genuinely need memory — ls20 isn't one.
+
+## Does per-game auto-tuning of a key hold up? (auto-gamma on Mario)
+
+Auto-gamma sets γ per game from the observed horizon (Mario ~0.997, ls20 ~0.995,
+g50t ~0.992) — the keys *do* differ per game, automatically. Test: does auto-gamma
+beat / match Mario's hand-tuned γ=0.9, on the game the default was tuned for? Plain
+PPO, 500k, same seed, only γ differs; eval on x_pos.
+
+| Mario (500k, seed 0) | eval x_pos (mean / max) |
+|---|---|
+| γ=0.9 (hand-tuned) | 1917 / 2914 |
+| auto-γ (0.997) | 1917 / 2914 |
+
+**Identical** — auto-gamma neither helps nor hurts Mario (γ barely matters under
+dense reward; the Mario eval is also deterministic, so this shows "harmless" more
+than "better"). Combined with the sparse-game result (where γ=0.9 was near-blind and
+auto-γ was *necessary*), the takeaway: **auto-gamma is a good per-game key —
+necessary where it matters, harmless where it doesn't.** That green-lights the
+auto-key-setter approach (derive keys per game from cheap signals), but the Mario
+result also cautions that magnitude coefficients may not need per-game tuning on
+dense games — so extend auto-derivation to `intrinsic_coef`/`ent_coef` only with
+evidence they matter, not preemptively.
+
 ## Tools built along the way (all generic — no per-game tuning, all toggleable)
 
 - **self-imitation** (`SILCollector` + `sil_push_episode`): keep every *winning*

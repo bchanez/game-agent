@@ -21,6 +21,7 @@ from collections import deque
 
 import numpy as np
 import torch
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.preprocessing import preprocess_obs
@@ -37,7 +38,72 @@ MODELS_DIR = "/app/data/models"
 TB_DIR = "/app/data/tb"
 
 
-class PPOSPR(PPO):
+class SILMixin:
+    """Self-imitation (Oh et al. 2018), sparse-reward variant — shared by the PPO and
+    recurrent paths. Keep the transitions of episodes that actually *earned reward*
+    and replay them, imitating actions whose Monte-Carlo return beat the critic, so
+    the agent stops discarding its rare successes. SILCollector fills the buffer
+    (whole episodes, across rollouts); sil_push_episode keeps only the winners."""
+
+    def _sil_init(self, sil_coef, sil_epochs=4, sil_batch=64, sil_buffer=20000,
+                  sil_value_coef=0.01):
+        self.sil_coef = sil_coef
+        self.sil_epochs = sil_epochs
+        self.sil_batch = sil_batch
+        self.sil_value_coef = sil_value_coef
+        self._sil_obs = deque(maxlen=sil_buffer)
+        self._sil_act = deque(maxlen=sil_buffer)
+        self._sil_ret = deque(maxlen=sil_buffer)
+
+    def sil_push_episode(self, obs_list, act_list, ext_list):
+        """A finished episode (from SILCollector). Keep it only if it earned reward;
+        the imitation target is the Monte-Carlo return per step."""
+        if sum(ext_list) <= 0:
+            return
+        g, rets = 0.0, [0.0] * len(ext_list)
+        for i in reversed(range(len(ext_list))):
+            g = ext_list[i] + self.gamma * g
+            rets[i] = g
+        for o, a, r in zip(obs_list, act_list, rets):
+            self._sil_obs.append(o)
+            self._sil_act.append(a)
+            self._sil_ret.append(r)
+
+    def _sil_evaluate(self, obs_b, act_b):
+        """(value, log_prob) for the sampled transitions. Recurrent subclasses
+        override this to feed a zeroed LSTM state per transition."""
+        values, log_prob, _ = self.policy.evaluate_actions(obs_b, act_b)
+        return values, log_prob
+
+    def _sil_update(self):
+        n = len(self._sil_obs)
+        self.logger.record("sil/buffer", float(n))       # log even before it fires
+        if n < self.sil_batch:
+            return
+        self.policy.set_training_mode(True)
+        obs_all, act_all = np.asarray(self._sil_obs), np.asarray(self._sil_act)
+        ret_all = np.asarray(self._sil_ret, dtype=np.float32)
+        last = 0.0
+        for _ in range(self.sil_epochs):
+            idx = np.random.randint(0, n, self.sil_batch)
+            obs_b = obs_as_tensor(obs_all[idx], self.device)
+            act_b = torch.as_tensor(act_all[idx], device=self.device).long().flatten()
+            ret_b = torch.as_tensor(ret_all[idx], device=self.device)
+            values, log_prob = self._sil_evaluate(obs_b, act_b)
+            # imitate only where the return beat the critic (the "better than
+            # expected" past actions) — the SIL clipped advantage
+            adv = (ret_b - values.flatten()).clamp(min=0.0)
+            policy_loss = -(log_prob * adv.detach()).mean()
+            value_loss = 0.5 * (adv ** 2).mean()
+            loss = self.sil_coef * (policy_loss + self.sil_value_coef * value_loss)
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            self.policy.optimizer.step()
+            last = float(loss.item())
+        self.logger.record("sil/loss", last)
+
+
+class PPOSPR(PPO, SILMixin):
     def __init__(self, *args, spr_coef=1.0, spr_lr=1e-4, spr_epochs=1,
                  spr_batch=256, spr_tau=0.01,
                  sil_coef=0.0, sil_epochs=4, sil_batch=64, sil_buffer=20000,
@@ -50,19 +116,7 @@ class PPOSPR(PPO):
         # SPR trains the *policy's* encoder, so it must feed it obs on the same
         # scale the policy does: /255 for images, but a one-hot grid is already 0/1.
         self._normalize_images = not is_grid_space(self.observation_space)
-
-        # Self-imitation (Oh et al. 2018), sparse-reward variant: keep the
-        # transitions of episodes that actually *earned reward* and replay them,
-        # imitating actions whose Monte-Carlo return beat the value estimate — so
-        # PPO stops discarding its rare successes. SILCollector fills the buffer
-        # (whole episodes, across rollouts), sil_push_episode keeps the winners.
-        self.sil_coef = sil_coef
-        self.sil_epochs = sil_epochs
-        self.sil_batch = sil_batch
-        self.sil_value_coef = sil_value_coef
-        self._sil_obs = deque(maxlen=sil_buffer)
-        self._sil_act = deque(maxlen=sil_buffer)
-        self._sil_ret = deque(maxlen=sil_buffer)
+        self._sil_init(sil_coef, sil_epochs, sil_batch, sil_buffer, sil_value_coef)
 
         if spr_coef <= 0:
             return
@@ -117,50 +171,37 @@ class PPOSPR(PPO):
         ema_update(self.target_encoder, self.policy.features_extractor, self.spr_tau)
         self.logger.record("spr/loss", float(loss.item()))
 
-    def sil_push_episode(self, obs_list, act_list, ext_list):
-        """A finished episode (from SILCollector). Keep it only if it earned reward;
-        the imitation target is the Monte-Carlo return per step."""
-        if sum(ext_list) <= 0:
-            return
-        g, rets = 0.0, [0.0] * len(ext_list)
-        for i in reversed(range(len(ext_list))):
-            g = ext_list[i] + self.gamma * g
-            rets[i] = g
-        for o, a, r in zip(obs_list, act_list, rets):
-            self._sil_obs.append(o)
-            self._sil_act.append(a)
-            self._sil_ret.append(r)
-
-    def _sil_update(self):
-        n = len(self._sil_obs)
-        self.logger.record("sil/buffer", float(n))       # log even before it fires
-        if n < self.sil_batch:
-            return
-        self.policy.set_training_mode(True)
-        obs_all, act_all = np.asarray(self._sil_obs), np.asarray(self._sil_act)
-        ret_all = np.asarray(self._sil_ret, dtype=np.float32)
-        last = 0.0
-        for _ in range(self.sil_epochs):
-            idx = np.random.randint(0, n, self.sil_batch)
-            obs_b = obs_as_tensor(obs_all[idx], self.device)
-            act_b = torch.as_tensor(act_all[idx], device=self.device).long().flatten()
-            ret_b = torch.as_tensor(ret_all[idx], device=self.device)
-            values, log_prob, _ = self.policy.evaluate_actions(obs_b, act_b)
-            # imitate only where the return beat the critic (the "better than
-            # expected" past actions) — the SIL clipped advantage
-            adv = (ret_b - values.flatten()).clamp(min=0.0)
-            policy_loss = -(log_prob * adv.detach()).mean()
-            value_loss = 0.5 * (adv ** 2).mean()
-            loss = self.sil_coef * (policy_loss + self.sil_value_coef * value_loss)
-            self.policy.optimizer.zero_grad()
-            loss.backward()
-            self.policy.optimizer.step()
-            last = float(loss.item())
-        self.logger.record("sil/loss", last)
-
     def train(self):
         if self.spr_coef > 0:
             self._spr_update()
+        super().train()
+        if self.sil_coef > 0:
+            self._sil_update()
+
+
+class RecurrentPPOSIL(RecurrentPPO, SILMixin):
+    """RecurrentPPO (LSTM memory) + self-imitation. SIL replays each winning
+    transition with a *zeroed* LSTM state (a per-transition approximation — much
+    simpler and cheaper than full sequence replay, and still a valid imitation
+    signal: favour the action that won, given that observation)."""
+
+    def __init__(self, *args, sil_coef=0.0, sil_epochs=4, sil_batch=64,
+                 sil_buffer=20000, sil_value_coef=0.01, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sil_init(sil_coef, sil_epochs, sil_batch, sil_buffer, sil_value_coef)
+
+    def _sil_evaluate(self, obs_b, act_b):
+        from sb3_contrib.common.recurrent.type_aliases import RNNStates
+        b = act_b.shape[0]
+        lstm = self.policy.lstm_actor
+        zero = lambda: (torch.zeros(lstm.num_layers, b, lstm.hidden_size, device=self.device),
+                        torch.zeros(lstm.num_layers, b, lstm.hidden_size, device=self.device))
+        states = RNNStates(zero(), zero())
+        episode_starts = torch.ones(b, device=self.device)   # each transition: fresh state
+        values, log_prob, _ = self.policy.evaluate_actions(obs_b, act_b, states, episode_starts)
+        return values, log_prob
+
+    def train(self):
         super().train()
         if self.sil_coef > 0:
             self._sil_update()
@@ -182,6 +223,30 @@ class CuriosityStats(BaseCallback):
     def _on_rollout_end(self):
         if self._extr:
             self.logger.record("curiosity/extrinsic_mean", float(np.mean(self._extr)))
+
+
+class ProgressStats(BaseCallback):
+    """Log the game's own progress metric (x_pos, levels_completed) per rollout, so
+    the real progress curve shows up live in TensorBoard — not just the shaped
+    ep_rew_mean. Generic: keyed on the spec's progress_key."""
+
+    def __init__(self, progress_key):
+        super().__init__()
+        self._key = progress_key
+
+    def _on_rollout_start(self):
+        self._vals = []
+
+    def _on_step(self):
+        for info in self.locals["infos"]:
+            if self._key in info:
+                self._vals.append(float(info[self._key]))
+        return True
+
+    def _on_rollout_end(self):
+        if self._vals:
+            self.logger.record(f"progress/{self._key}_mean", float(np.mean(self._vals)))
+            self.logger.record(f"progress/{self._key}_max", float(np.max(self._vals)))
 
 
 class AutoGamma(BaseCallback):
@@ -257,6 +322,9 @@ def main():
                          "(measures transfer: pretrain on games A,B -> learn C)")
     ap.add_argument("--timesteps", type=int, default=500_000)
     ap.add_argument("--n-envs", type=int, default=8)
+    ap.add_argument("--save-freq", type=int, default=20_000,
+                    help="env steps between checkpoints (raise it for long runs so "
+                         "they don't pile up thousands of files)")
     ap.add_argument("--spr-coef", type=float, default=1.0,
                     help="weight of the self-predictive loss (0 = plain PPO control)")
     ap.add_argument("--spr-lr", type=float, default=1e-4)
@@ -287,7 +355,10 @@ def main():
                          "pixel games already stack 4")
     ap.add_argument("--auto", action="store_true",
                     help="self-configure: probe the game and pick the tools "
-                         "(curiosity/SIL/frame-stack) from measurement, not by hand")
+                         "(curiosity/SIL/frame-stack/memory) from measurement")
+    ap.add_argument("--recurrent", action="store_true",
+                    help="memory tool: an LSTM policy (RecurrentPPO) for games with "
+                         "hidden state a single frame can't show (non-Markovian grids)")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -296,8 +367,10 @@ def main():
         cfg, _ = auto_configure(get_game(args.game))
         args.intrinsic_coef = cfg["intrinsic_coef"]
         args.sil_coef = cfg["sil_coef"]
+        args.spr_coef = cfg["spr_coef"]
         args.frame_stack = cfg["frame_stack"]
         args.auto_gamma = cfg["auto_gamma"]
+        args.recurrent = cfg["recurrent"]
 
     os.makedirs(MODELS_DIR, exist_ok=True)
     if args.games:
@@ -314,25 +387,39 @@ def main():
                          extrinsic_coef=args.extrinsic_coef, device="cpu",
                          update_proportion=args.rnd_update_proportion)
 
-    model = PPOSPR(
-        "CnnPolicy", venv, verbose=1,
-        n_steps=512, batch_size=64, n_epochs=args.n_epochs,
+    common = dict(
+        n_steps=512, batch_size=64, n_epochs=args.n_epochs, verbose=1,
         learning_rate=1e-4, gamma=args.gamma, gae_lambda=1.0, ent_coef=0.01,
         tensorboard_log=TB_DIR, device="cpu", seed=args.seed,
-        spr_coef=args.spr_coef, spr_lr=args.spr_lr, sil_coef=args.sil_coef,
-        policy_kwargs=policy_kwargs_for(venv.observation_space),
     )
+    if args.recurrent:
+        # memory tool: an LSTM policy for hidden-state games, now WITH self-imitation
+        # (RecurrentPPOSIL). Only SPR stays off (not wired into the recurrent buffer).
+        if args.spr_coef > 0:
+            print("note: SPR not yet supported with --recurrent — off", flush=True)
+            args.spr_coef = 0.0
+        pk = policy_kwargs_for(venv.observation_space)
+        pk["lstm_hidden_size"] = 256
+        model = RecurrentPPOSIL("CnnLstmPolicy", venv, sil_coef=args.sil_coef,
+                                policy_kwargs=pk, **common)
+    else:
+        model = PPOSPR(
+            "CnnPolicy", venv, spr_coef=args.spr_coef, spr_lr=args.spr_lr,
+            sil_coef=args.sil_coef,
+            policy_kwargs=policy_kwargs_for(venv.observation_space), **common,
+        )
+        if args.init_from:
+            src = PPO.load(args.init_from, device="cpu")
+            model.policy.load_state_dict(src.policy.state_dict())
+            if model.spr_coef > 0:  # restart the EMA target aligned with transferred encoder
+                model.target_encoder.load_state_dict(
+                    model.policy.features_extractor.state_dict())
+            print(f"Initialized policy from {args.init_from}", flush=True)
 
-    if args.init_from:
-        src = PPO.load(args.init_from, device="cpu")
-        model.policy.load_state_dict(src.policy.state_dict())
-        if model.spr_coef > 0:  # restart the EMA target aligned with the transferred encoder
-            model.target_encoder.load_state_dict(model.policy.features_extractor.state_dict())
-        print(f"Initialized policy from {args.init_from}", flush=True)
-
-    prefix = f"{game_label}_ppo_spr" + ("_rnd" if curious else "")
+    prefix = (f"{game_label}_ppo_spr" + ("_rnd" if curious else "")
+              + ("_rec" if args.recurrent else ""))
     ckpt = CheckpointCallback(
-        save_freq=max(20_000 // args.n_envs, 1),
+        save_freq=max(args.save_freq // args.n_envs, 1),
         save_path=MODELS_DIR, name_prefix=prefix,
     )
 
@@ -343,7 +430,10 @@ def main():
         callbacks.append(AutoGamma())
     if args.sil_coef > 0:
         callbacks.append(SILCollector())
-    print(f"Training PPO+SPR (coef={args.spr_coef}, intrinsic={args.intrinsic_coef}, "
+    if not args.games and get_game(args.game).progress_key:
+        callbacks.append(ProgressStats(get_game(args.game).progress_key))
+    print(f"Training {'RecurrentPPO' if args.recurrent else 'PPO+SPR'} "
+          f"(spr={args.spr_coef}, sil={args.sil_coef}, intrinsic={args.intrinsic_coef}, "
           f"gamma={'auto' if args.auto_gamma else args.gamma}) "
           f"for {args.timesteps} steps on {args.n_envs} env(s)...", flush=True)
     model.learn(total_timesteps=args.timesteps, callback=callbacks)

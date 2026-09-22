@@ -16,16 +16,29 @@ from game_env import make_venv
 from games import get_game
 
 
-def evaluate(model_path, game, episodes=20, frame_stack=1, max_steps=1000):
+def evaluate(model_path, game, episodes=20, frame_stack=1, max_steps=1000,
+             recurrent=False):
     venv = make_venv(get_game(game), 1, frame_stack=frame_stack)
-    model = PPO.load(model_path, device="cpu")
+    if recurrent:
+        from sb3_contrib import RecurrentPPO
+        model = RecurrentPPO.load(model_path, device="cpu")
+    else:
+        model = PPO.load(model_path, device="cpu")
     levels, wins = [], 0
     for _ in range(episodes):
         obs = venv.reset()
+        lstm_states = None
+        episode_starts = np.ones((1,), dtype=bool)     # LSTM state carried per step
         done, steps, best, won = False, 0, 0, False
         while not done and steps < max_steps:
-            action, _ = model.predict(obs, deterministic=False)
+            if recurrent:
+                action, lstm_states = model.predict(
+                    obs, state=lstm_states, episode_start=episode_starts,
+                    deterministic=False)
+            else:
+                action, _ = model.predict(obs, deterministic=False)
             obs, r, dones, infos = venv.step(action)
+            episode_starts = dones
             best = max(best, infos[0].get("levels_completed", 0))
             won = won or bool(infos[0].get("won", False))
             done = bool(dones[0])
@@ -42,8 +55,10 @@ def main():
     ap.add_argument("game")
     ap.add_argument("episodes", nargs="?", type=int, default=20)
     ap.add_argument("frame_stack", nargs="?", type=int, default=1)
+    ap.add_argument("--recurrent", action="store_true", help="load with RecurrentPPO")
     args = ap.parse_args()
-    mean_l, max_l, wins = evaluate(args.model, args.game, args.episodes, args.frame_stack)
+    mean_l, max_l, wins = evaluate(args.model, args.game, args.episodes,
+                                   args.frame_stack, recurrent=args.recurrent)
     print(f"{args.game}: levels_completed mean {mean_l:.2f}  max {max_l}  "
           f"wins {wins}/{args.episodes}", flush=True)
 

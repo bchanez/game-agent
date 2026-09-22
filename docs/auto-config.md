@@ -35,13 +35,17 @@ when useless** (off = saved compute, less noise).
    on/off (the self-configuration). Built in `auto_config.py` (`probe` +
    `configure`), exposed as `train_ppo_spr.py --auto`:
    - *reward-sparsity detector* ✅ reliable: reward density over a random probe →
-     curiosity + self-imitation on when sparse. On every ARC game it reads ~0 and
-     correctly enables them; on dense games it disables them.
-   - *motion detector* ❌ unreliable: "fraction of cells changed" does NOT separate
-     agent-caused change (Markovian) from ambient motion (the non-Markovian case
-     frame-stack is for) — ls20 (no motion) measured *higher* than Breakout. So
-     frame-stack is defaulted off for grids; a real non-Markovianity detector is a
-     layer-2 TODO.
+     curiosity + self-imitation on when sparse. Verified: Mario reads 0.72 (dense →
+     both OFF), every ARC game reads 0.00 (sparse → both ON), Breakout 0.007 (ON).
+   - *non-Markov detector* ✅ (replaces the broken "fraction of cells changed"
+     motion heuristic): if the SAME (obs, action) ever leads to a DIFFERENT next
+     obs, a single frame hides state. Routed by obs type — **pixels** (hidden
+     *velocity*) → frame-stack; **grids** (hidden *counter/rule*) → memory/LSTM,
+     not frame-stack. Verified: Mario/Breakout → frame-stack; ls20/g50t flagged
+     non-Markov (ls20's depleting "life") → `recurrent=True`, which `--recurrent`
+     now actions (an LSTM policy / RecurrentPPO, auto-selected). Caveat: SPR and
+     self-imitation aren't wired into the recurrent buffer yet (off on that path);
+     and the held-last-grid on empty transition frames can inflate the grid signal.
    - auto-gamma is already a detector+tool in one (γ = 1 − 1/observed-horizon).
 
 3. **Meta-analysis / the automated loop** — periodically measure which *enabled*
@@ -58,25 +62,52 @@ otherwise the meta-controller is selecting among broken parts. So:
 1. **Build the tools** ✅ (mostly) — curiosity, auto-gamma, SPR, grid embedding,
    self-imitation, frame-stack, each measured against a clean baseline (the ARC
    ls20 ablation). SIL was the first to move ls20 off 0 (→ level 1).
-2. **Add detectors** — in progress: sparsity works, motion doesn't (see above).
-3. **Automate the loop** ← *next*.
+2. **Fast configurator** ✅ — the default: probe → each tool's rule → config in
+   seconds (`auto_config.py`, `--auto`). Detectors: sparsity → curiosity/SIL;
+   non-Markov → frame-stack (pixels) or memory (grids). Verified per-game.
+3. **Slow ablation loop** — built (`auto_loop.py`) but reserved for genuinely-new
+   tools, *not* the default (a cheap detector answers "activate?" far faster).
 
-## Self-improvement: automating the loop (the north star)
+## Two separate decisions (don't conflate them)
 
-The end goal isn't a toolbox *we* hand-tune — it's a toolbox the system optimizes
-itself. Key legality constraint: the ARC-AGI-3 Kaggle eval forbids external LLMs,
-so self-improvement must happen at **dev time** (an offline loop designs/tests the
-agent) and the *submitted* agent is fixed and LLM-free.
+A tool's lifecycle has two decisions, and only one is expensive:
 
-- **Level A — auto-search over existing tools** (buildable now, no LLM): a harness
-  that hill-climbs the tool set — start from the best known config (auto-gamma +
-  SIL), toggle/adjust one tool at a time on a short training budget, evaluate, keep
-  improvements, log everything. This is exactly the ls20 ablation, run
-  automatically. Compute-aware: short per-candidate budgets (triage), full run only
-  on the winner; sequential (CPU-bound).
-- **Level B — generated tools** (later, dev-time LLM): the LLM proposes *new* tool
-  code inside the loop, tests it, keeps the winners (à la Voyager / ADAS). The
-  agent is designed by AI but shipped frozen — legal at eval.
+1. **Keep-in-library** — *additive, once*: a tool enters the library the moment it
+   helps on **≥1 game**, and stays forever. No re-testing. (SIL helped ls20 → kept;
+   SPR helped Mario → kept; curiosity helps sparse games → kept.) The library only
+   grows.
+2. **Activate-per-game** — *fast, every game*: given a new game, which library tools
+   to switch on and how to set their params. This is the **fast configurator**
+   (`auto_config.py`, `--auto`): one short probe → each tool's rule fires → a full
+   config in **seconds**.
+
+The mistake to avoid: using a slow ablation (a full training run per tool, ~30 min)
+to answer decision 2. That's what a cheap **detector** is for. Re-running "does
+removing SIL hurt on ls20?" is redundant — SIL is already kept, and the sparsity
+detector already decides to activate it in 2 seconds.
+
+## The fast configurator (`auto_config.py`) — the default path
+
+`TOOLS` is the library: each entry is `(name, rule)` where `rule(signals)` returns
+the config overrides that tool wants (on/off and/or params). `configure` applies
+every rule to one probe. Growing the box = appending a tool. Some tools are on/off
+(curiosity, self-imitation — gated on reward sparsity); some *tune params* (auto-gamma
+sets γ from the observed horizon). This runs in seconds and needs no training.
+
+## When the slow loop *is* justified (rare)
+
+The automated ablation loop (`auto_loop.py`, "Level A") is **not** the default — it's
+for the cases a cheap detector can't cover: validating a **genuinely new** tool whose
+usefulness is unknown, or tuning a hyperparameter with no cheap signal. It hill-climbs
+configs on a short budget. Caveat learned the hard way: single-eval scores are noisy
+(the same config scored 0.35 then 0.10 across identical runs), so only large gaps are
+trustworthy without multi-seed — which multiplies compute (an argument for a GPU).
+
+## Level B — generated tools (later, dev-time LLM)
+
+The end of the north star: the LLM proposes *new* tool code inside the dev loop, tests
+it, keeps the winners (à la Voyager / ADAS). Self-improvement happens at **dev time**
+(the Kaggle eval forbids external LLMs); the shipped agent is fixed and LLM-free.
 
 ## Measurement discipline
 

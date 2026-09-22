@@ -18,3 +18,4 @@ services:
     volumes:
       - ../src:/app/src/
       - ../data:/app/data/
+      - ../tests:/app/tests/
