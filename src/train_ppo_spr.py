@@ -26,6 +26,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.preprocessing import preprocess_obs
 from stable_baselines3.common.utils import obs_as_tensor
 
+from auto_config import auto_configure
 from game_env import make_multi_venv, make_venv
 from games import get_game, get_games
 from nets import is_grid_space, policy_kwargs_for
@@ -284,9 +285,19 @@ def main():
     ap.add_argument("--frame-stack", type=int, default=1,
                     help="stack N frames for a raw grid game (perceive motion); "
                          "pixel games already stack 4")
+    ap.add_argument("--auto", action="store_true",
+                    help="self-configure: probe the game and pick the tools "
+                         "(curiosity/SIL/frame-stack) from measurement, not by hand")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
+
+    if args.auto and not args.games:
+        cfg, _ = auto_configure(get_game(args.game))
+        args.intrinsic_coef = cfg["intrinsic_coef"]
+        args.sil_coef = cfg["sil_coef"]
+        args.frame_stack = cfg["frame_stack"]
+        args.auto_gamma = cfg["auto_gamma"]
 
     os.makedirs(MODELS_DIR, exist_ok=True)
     if args.games:

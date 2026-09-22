@@ -6,9 +6,10 @@ Add a new game by dropping a module in this package that exposes a `SPEC`
 """
 from games.mario import SPEC as mario
 from games.atari import montezuma, breakout
-from games.arc import ls20 as arc_ls20
+from games.arc import ls20 as arc_ls20, g50t as arc_g50t, tr87 as arc_tr87
 
-REGISTRY = {spec.name: spec for spec in (mario, montezuma, breakout, arc_ls20)}
+REGISTRY = {spec.name: spec
+            for spec in (mario, montezuma, breakout, arc_ls20, arc_g50t, arc_tr87)}
 
 
 def get_game(name):

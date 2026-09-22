@@ -499,6 +499,49 @@ past the levels those flukes never reached. Getting further needs better
 what luck already found — pointing at **Go-Explore** (archive promising states,
 return, explore from there) as the next lever.
 
+## Go-Explore reaches level 1 too — but not level 2 (random exploration wall)
+
+ls20 is deterministic (same actions → same grids), so Go-Explore can "return" to
+any archived state by replaying its action sequence — no state-save API needed
+(`go_explore.py`). Cell = (levels_completed, subsampled grid); select a frontier
+cell (biased to the deepest level reached, least-visited), return, explore random
+bursts, archive new cells.
+
+| setting | cells archived | deepest level |
+|---|---|---|
+| factor 2, 1.5M steps, frontier-biased | ~5200 | **1** |
+| factor 1 (full grid), 500k steps | ~6100 | **1** |
+
+**Go-Explore finds level 1 fast (~40–80k steps) but never level 2, at either cell
+granularity — and the archive saturates (~5–6k cells).** Returning to the frontier
+works; random action bursts from a level-1 state just can't solve level 2. This
+matches the game itself (a play-through shows level 2 has a depleting "life" budget
+and a required path — random exploration wastes the budget). So the wall is not
+*returning* to the frontier but *what you do there*: pure random exploration is too
+undirected. The natural next step is **policy-guided Go-Explore** — explore from
+frontier cells with the SIL-trained policy (which already solves level 1) instead
+of random actions, then robustify the deeper trajectories back via self-imitation.
+
+## Generality — does the self-configured stack transfer to another ARC game?
+
+The agent now **self-configures** (`auto_config.py`, `--auto`): a short random
+probe reads reward sparsity → it enables curiosity + self-imitation + auto-gamma
+on its own, no per-game tuning. Run identically on a *different* keyboard ARC game,
+`g50t` (added alongside `ls20`, `tr87`):
+
+| game (same `--auto` config, 500k) | eval levels (mean / max) | training completions | SIL buffer |
+|---|---|---|---|
+| arc_ls20 | 0.35 / 1 | 7 | ~2020 |
+| arc_g50t | 0.05 / 1 | 8 | ~1820 |
+
+**The capability generalizes; the reliability doesn't (yet).** The same
+auto-chosen tools reach level 1 on both games (max 1 each) — completing a level is
+not an ls20 quirk, and self-configuration picked the right tools on an unseen game.
+But g50t is completed far less reliably (0.05 vs 0.35) — the stack transfers
+*weakly*. That's an honest read of a generic agent: the mechanism is game-agnostic,
+the performance is not uniform. No game-specific tuning was used, which is the
+point.
+
 ## Tools built along the way (all generic — no per-game tuning, all toggleable)
 
 - **self-imitation** (`SILCollector` + `sil_push_episode`): keep every *winning*

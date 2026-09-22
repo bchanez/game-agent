@@ -44,9 +44,15 @@ class ArcEnv(gym.Env):
         self._max_steps = max_steps
         self._steps = 0
         self._levels = 0
+        self._last_grid = np.zeros((GRID, GRID), np.uint8)
 
     def _obs(self, fd):
-        return np.asarray(fd.frame)[0].astype(np.uint8)[None]   # (1,64,64), colors 0..15
+        frame = np.asarray(fd.frame, dtype=np.uint8)
+        # level transitions / terminal states can return zero frames; hold the last
+        # valid grid so the observation shape stays constant
+        if frame.size:
+            self._last_grid = frame[0]
+        return self._last_grid[None]                           # (1,64,64), colors 0..15
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -69,10 +75,18 @@ class ArcEnv(gym.Env):
         return self._obs(fd), reward, terminated, truncated, info
 
 
-ls20 = GameSpec(
-    name="arc_ls20",
-    make_raw_env=lambda: ArcEnv("ls20"),
-    progress_key="levels_completed",
-    success_key="won",
-    raw=True,
-)
+def _arc_spec(game_id):
+    return GameSpec(
+        name=f"arc_{game_id}",
+        make_raw_env=lambda gid=game_id: ArcEnv(gid),
+        progress_key="levels_completed",
+        success_key="won",
+        raw=True,
+    )
+
+
+# keyboard-only ARC games (directional/simple actions — the v1 adapter handles
+# these without the spatial ACTION6 click that 'click'-tagged games need).
+ls20 = _arc_spec("ls20")
+g50t = _arc_spec("g50t")
+tr87 = _arc_spec("tr87")
