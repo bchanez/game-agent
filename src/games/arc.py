@@ -38,14 +38,15 @@ class ArcEnv(gym.Env):
         self._actions = _simple_actions()
         self._env = arc_agi.Arcade().make(game_id)
         self.action_space = gym.spaces.Discrete(len(self._actions))
-        self.observation_space = gym.spaces.Box(0, 1, (N_COLORS, GRID, GRID), np.uint8)
+        # raw color-index grid (0..15), NOT one-hot: cheap to stack across frames,
+        # and a learned embedding in the net beats 16 one-hot channels per frame.
+        self.observation_space = gym.spaces.Box(0, N_COLORS - 1, (1, GRID, GRID), np.uint8)
         self._max_steps = max_steps
         self._steps = 0
         self._levels = 0
 
     def _obs(self, fd):
-        grid = np.asarray(fd.frame)[0]                      # (64,64), first frame
-        return (np.arange(N_COLORS)[:, None, None] == grid[None]).astype(np.uint8)
+        return np.asarray(fd.frame)[0].astype(np.uint8)[None]   # (1,64,64), colors 0..15
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)

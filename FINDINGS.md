@@ -462,3 +462,76 @@ not here.
 - "Trial simple" reset the LSTM per episode; a "trial canonical" run (persist
   state across episodes) wasn't tested — but on self-identifying games it's
   unlikely to change the verdict.
+
+# Findings — ARC-AGI-3 first contact (ls20): can curiosity crack it?
+
+First real runs on the north-star target (step 3). PPO + RND curiosity on the ARC
+grid adapter (`games/arc.py`: 64×64 color grid, Discrete simple actions, reward =
+Δ`levels_completed`, terminate on WIN/GAME_OVER). Game `ls20` (only ACTION1-4 are
+available — pure navigation). Reward is **sparse**: nonzero only when a level is
+completed. Ablation, 1M then 500k steps, eval = mean levels completed / wins over
+20 episodes.
+
+## Self-imitation is the first lever that moves the needle
+
+| config (500k–1M, seed 0) | eval levels (mean / max) | wins/20 | fps | notes |
+|---|---|---|---|---|
+| baseline (γ=0.9) | 0.00 / 0 | 0 | ~240 | 6 completions, all early |
+| + auto-γ | 0.00 / 0 (killed 690k) | — | ~240 | 8, none after 324k |
+| + SPR | 0.00 / 0 | 0 | ~150 | 4, all before 30k |
+| + **self-imitation** (γ auto + SIL) | **0.35 / 1** | 0 | ~275 | SIL buffer ~2020; **first nonzero** |
+| + embed frame-stack | *not run* | — | ~150 | dropped: ls20 has no motion (per play-through) |
+
+**Every reward-shaping / representation lever left the eval at 0.00 — until
+self-imitation, which reaches level 1 in ~35% of eval episodes (mean 0.35, max 1).**
+The earlier failure mode was consistent: a handful of level completions *early*
+(when the policy is high-entropy and stumbles onto the exit), then flat forever —
+the agent discarded its own rare wins. Neither a far-sighted discount (auto-gamma)
+nor a dynamics-aware representation (SPR) fixed that. **Replaying the winning
+episodes (SIL) is what finally makes level-1 completion reproducible** — direct
+evidence the bottleneck was *consolidation* (on-policy forgetting), not credit
+assignment or perception.
+
+Still no full wins (7 levels): SIL reuses the ~10 early winning episodes (buffer
+plateaued at ~2020 transitions) but does not generate *new* wins, so it can't get
+past the levels those flukes never reached. Getting further needs better
+*exploration* (reliably discovering the cross/door mechanic), not just reusing
+what luck already found — pointing at **Go-Explore** (archive promising states,
+return, explore from there) as the next lever.
+
+## Tools built along the way (all generic — no per-game tuning, all toggleable)
+
+- **self-imitation** (`SILCollector` + `sil_push_episode`): keep every *winning*
+  episode (extrinsic return > 0), across rollout boundaries, and replay it,
+  imitating actions whose Monte-Carlo return beat the critic. The lever that broke
+  0.00 → 0.35. Under RND the game reward is hidden in the mixed reward, so a
+  callback captures the true `info['extrinsic']`; a level win doesn't end the
+  episode, so collection must span rollouts (the first, per-rollout version caught
+  nothing).
+- **auto-gamma** (`AutoGamma` callback): sets γ = 1 − 1/(observed mean episode
+  length), so the discount's horizon tracks the game's own horizon (ls20 → γ≈0.995
+  automatically). Fixes the Mario-tuned γ=0.9 being near-blind when the payoff is
+  100+ steps away — necessary for the long-horizon return SIL imitates, but not
+  sufficient alone.
+- **embedding grid** (`GridCNN` + raw-grid obs): a learned `Embedding(16→4)`
+  replaces the one-hot grid, so stacking N frames costs N·4 channels instead of
+  N·16 — frame-stacking went from **50 → ~150 fps**, nearly free. Not needed on
+  ls20 (no motion), but the representation is the cheap default for grids.
+
+## Takeaway
+
+**The bottleneck on ls20 was *consolidation*, not credit assignment or perception:
+reward-shaping (auto-gamma) and representation (SPR) stayed at 0.00, but replaying
+the agent's own wins (self-imitation) reached level 1 in ~35% of episodes.** This
+is the first concrete win of the toolbox approach (see `docs/auto-config.md`) —
+each lever a single-variable experiment against a clean baseline. But SIL only
+recycles luck; going past level 1 needs *exploration* that reliably finds the
+mechanic, so **Go-Explore is the next lever**.
+
+## Caveats
+
+- Single game (ls20), single seed. ls20 exposes only 4 directional actions, so its
+  difficulty may be atypical; other ARC games use ACTION5/6 (interact / spatial
+  click, the latter deferred to v2).
+- "Completions" counted from `curiosity/extrinsic_mean` per rollout (VecMonitor
+  sits under RNDReward, so `ep_rew_mean` is the mixed reward, not game reward).

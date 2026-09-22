@@ -18,25 +18,39 @@ def is_grid_space(observation_space):
     return len(shape) == 3 and shape[-1] not in (1, 2, 3, 4)
 
 
-class GridCNN(BaseFeaturesExtractor):
-    """CNN for a one-hot color grid (C channels, HxH). Fed 0/1 floats, so the
-    policy must run with normalize_images=False (see policy_kwargs_for)."""
+N_COLORS = 16
 
-    def __init__(self, observation_space, features_dim=256):
+
+class GridCNN(BaseFeaturesExtractor):
+    """CNN for stacked color-index grids (N frames, HxH, values 0..15). Each color
+    is mapped through a learned embedding (dim d) rather than one-hot, so N frames
+    cost N*d input channels (e.g. 4*4=16) instead of N*16 — cheap frame-stacking
+    that still lets the net perceive motion. Fed as floats (normalize_images=False,
+    see policy_kwargs_for); cast back to long indices for the embedding."""
+
+    def __init__(self, observation_space, features_dim=256, embed_dim=4):
         super().__init__(observation_space, features_dim)
-        c, h, _ = observation_space.shape
+        n_frames, h, _ = observation_space.shape
+        self.embed = nn.Embedding(N_COLORS, embed_dim)
         self.cnn = nn.Sequential(
-            nn.Conv2d(c, 32, 4, stride=2, padding=1), nn.ReLU(),
+            nn.Conv2d(n_frames * embed_dim, 32, 4, stride=2, padding=1), nn.ReLU(),
             nn.Conv2d(32, 64, 4, stride=2, padding=1), nn.ReLU(),
             nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.ReLU(),
             nn.Flatten(),
         )
         with torch.no_grad():
-            n_flat = self.cnn(torch.zeros(1, *observation_space.shape)).shape[1]
+            dummy = torch.zeros(1, *observation_space.shape, dtype=torch.long)
+            n_flat = self.cnn(self._embed(dummy)).shape[1]
         self.linear = nn.Sequential(nn.Linear(n_flat, features_dim), nn.ReLU())
 
+    def _embed(self, obs):
+        # (batch, N, H, W) color indices -> (batch, N*embed_dim, H, W)
+        b, n, h, w = obs.shape
+        e = self.embed(obs.long())                          # (b, N, H, W, d)
+        return e.permute(0, 1, 4, 2, 3).reshape(b, -1, h, w)
+
     def forward(self, obs):
-        return self.linear(self.cnn(obs))
+        return self.linear(self.cnn(self._embed(obs)))
 
 
 def policy_kwargs_for(observation_space):

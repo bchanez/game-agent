@@ -140,20 +140,26 @@ def make_single_env(spec, normalize_reward=False):
     return env
 
 
-def make_venv(spec, n_envs=1, subproc=None):
+def make_venv(spec, n_envs=1, subproc=None, frame_stack=1):
     """Vectorized, frame-stacked env ready for Stable-Baselines3, for any game.
 
     With n_envs>1 the environments run in separate processes (SubprocVecEnv),
     the main way to speed up training on a multi-core CPU (~8 envs is the sweet
     spot here). Scripts using this must be guarded by `if __name__ == "__main__"`
     (SubprocVecEnv re-imports the module).
+
+    Pixel games always stack 4 frames (the classic recipe). A raw grid game stacks
+    only if frame_stack>1 (channels-first), so an agent can perceive motion across
+    grids when it matters — same generic knob, off by default.
     """
     if subproc is None:
         subproc = n_envs > 1
     env_fns = [(lambda s=spec: make_single_env(s)) for _ in range(n_envs)]
     venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
-    if not spec.raw:                               # grid obs needs no frame-stacking
+    if not spec.raw:
         venv = VecFrameStack(venv, 4, channels_order="last")
+    elif frame_stack > 1:
+        venv = VecFrameStack(venv, frame_stack, channels_order="first")
     venv = VecMonitor(venv)
     return venv
 
