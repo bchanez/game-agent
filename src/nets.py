@@ -6,9 +6,12 @@ SB3's default NatureCNN is right. ARC-AGI-3 feeds a one-hot color *grid*
 assumptions don't hold), so it needs its own small CNN. The dispatch keys off the
 obs *shape*, never the game name — the boundary holds.
 """
+import numpy as np
 import torch
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+from objects import FEAT_DIM, object_features
 
 
 def is_grid_space(observation_space):
@@ -53,11 +56,69 @@ class GridCNN(BaseFeaturesExtractor):
         return self.linear(self.cnn(self._embed(obs)))
 
 
-def policy_kwargs_for(observation_space):
-    """policy_kwargs for a PPO policy, chosen from the obs space. Empty (SB3
-    defaults) for images; the grid CNN + no image-normalization for grids."""
+class ObjectCentricExtractor(BaseFeaturesExtractor):
+    """Perceive the grid as a SET of objects (connected components) and encode it with
+    a permutation-invariant DeepSets net. Objecthood is a generic structural transform
+    (no game knowledge, non-differentiable); the *encoding* is learned. The bet: a set
+    of entities + relations transfers across unseen games far better than raw cells
+    (ROADMAP Phase 1). Objects are read from the latest frame in the stack."""
+
+    def __init__(self, observation_space, features_dim=256, max_objects=32, hidden=128):
+        super().__init__(observation_space, features_dim)
+        self.max_objects = max_objects
+        self.phi = nn.Sequential(nn.Linear(FEAT_DIM, hidden), nn.ReLU(),
+                                 nn.Linear(hidden, hidden), nn.ReLU())
+        self.rho = nn.Sequential(nn.Linear(2 * hidden, features_dim), nn.ReLU())
+
+    def _featurize(self, obs):
+        # obs (B, N, H, W) float grid -> object features on the latest frame. The CC
+        # parse is numpy/scipy (no grad) — gradients start at phi.
+        arr = obs.detach().cpu().numpy().astype(np.uint8)
+        b = arr.shape[0]
+        feats = np.zeros((b, self.max_objects, FEAT_DIM), np.float32)
+        masks = np.zeros((b, self.max_objects), np.float32)
+        for i in range(b):
+            f, m, _ = object_features(arr[i, -1], self.max_objects)
+            feats[i], masks[i] = f, m
+        return (torch.as_tensor(feats, device=obs.device),
+                torch.as_tensor(masks, device=obs.device))
+
+    def forward(self, obs):
+        feats, masks = self._featurize(obs)              # (B,K,F), (B,K)
+        h = self.phi(feats) * masks.unsqueeze(-1)        # zero padded slots
+        summed = h.sum(dim=1)
+        maxed = (h + (1.0 - masks).unsqueeze(-1) * -1e9).max(dim=1).values
+        maxed = torch.nan_to_num(maxed, neginf=0.0)      # grids with 0 objects
+        return self.rho(torch.cat([summed, maxed], dim=1))
+
+
+class HybridGridObjectExtractor(BaseFeaturesExtractor):
+    """Both worlds: the color-embedding CNN (keeps exact spatial layout, which
+    navigation needs) concatenated with the object-centric DeepSets (entities +
+    relations). A pure object-set can blur the precise geometry pathfinding needs;
+    the hybrid adds object understanding without discarding the spatial map."""
+
+    def __init__(self, observation_space, features_dim=256, max_objects=32):
+        super().__init__(observation_space, features_dim)
+        half = features_dim // 2
+        self.grid = GridCNN(observation_space, features_dim=features_dim - half)
+        self.objs = ObjectCentricExtractor(observation_space, features_dim=half,
+                                           max_objects=max_objects)
+
+    def forward(self, obs):
+        return torch.cat([self.grid(obs), self.objs(obs)], dim=1)
+
+
+_GRID_ENCODERS = {"grid": GridCNN, "object": ObjectCentricExtractor,
+                  "hybrid": HybridGridObjectExtractor}
+
+
+def policy_kwargs_for(observation_space, encoder="grid"):
+    """policy_kwargs for a PPO policy, chosen from the obs space. Empty (SB3 defaults)
+    for images; for grids, one of the grid encoders (color CNN / object DeepSets /
+    hybrid), all with no image-norm."""
     if is_grid_space(observation_space):
-        return dict(features_extractor_class=GridCNN,
+        return dict(features_extractor_class=_GRID_ENCODERS[encoder],
                     features_extractor_kwargs=dict(features_dim=256),
                     normalize_images=False)
     return {}

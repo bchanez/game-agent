@@ -774,3 +774,152 @@ the idea. (Echoes the earlier "Mario is the wrong testbed for meta-RL" conclusio
 - IDM was wired to shape the *shared policy encoder* (the aggressive setting); a
   lower coef or a separate encoder was not swept — the negative verdict is for "IDM as
   policy-encoder shaping on Mario", not for every possible use.
+
+# Findings — generic ARC agent: object-centric perception & the SPR-off win (Phases 1, 4)
+
+Building the generic-agent stack (ROADMAP Phases 1–5). Two results: object-centric
+perception is *interpretable but no RL win* on ls20, and — incidentally — **dropping
+SPR nearly doubles ls20**, exposing a bad auto-config default.
+
+## Object-centric perception: built, interpretable, but no RL win on ls20
+
+`objects.py` extracts entities as connected components (a generic structural transform,
+no game knowledge); `viz_objects.py` shows it finds ls20's avatar (moving frame to
+frame), rooms, and the depleting life-bar — with **no labels**. The "understanding"
+layer works. But as the policy encoder it does not help. A/B vs the color-embedding CNN
+(`GridCNN`), ls20, matched config (SIL + curiosity + auto-γ, **no SPR**), 500k, seed 0:
+
+| encoder | eval levels (mean / 20) |
+|---|--:|
+| **grid** (color CNN) | **0.60** |
+| object (DeepSets set-encoder) | 0.00 |
+| hybrid (grid CNN + objects) | 0.00 |
+
+Pure object-centric collapses; the **hybrid — which contains the working grid CNN —
+also collapses to 0.00**. ls20 is navigation (reach the exit): it needs the *precise
+spatial map*, which the permutation-invariant set-pooling discards, and the object
+branch destabilizes the encoder. Also, ls20's SIL success is a **bimodal, luck-
+dependent bootstrap** (it needs a lucky early win to imitate), so a different encoder's
+exploration can simply miss it — single seed, so part of the 0.00 is variance. Either
+way, adding objects did not help. Third "mechanism works, task benefit absent" tool
+(with IDM, ego-motion). Reframe: object-centric's real value is a **cross-modality
+abstraction bridge** (map pixels *and* grids to one entity-set), not a mono-game
+booster — tested here on the wrong axis. Kept as a tool, not auto-enabled.
+
+## The incidental win — SPR hurts sparse ARC, drop it there
+
+To A/B encoders we needed a regime where ls20 actually learns. `--auto` enables SPR
+always; with SPR on, grid scored only **0.05** (matching the earlier "+SPR → 0.00" on
+ls20). With **SPR off** (SIL + curiosity + auto-γ), grid reached **0.60** — nearly 2×
+the previously documented 0.35. So SPR *actively hurts* ls20 (sparse grid) while it
+helps Breakout/Mario (dense). The `auto_config` `_spr` rule ("on by default") is wrong
+for sparse grids. **Action:** turn SPR off when reward is sparse (like curiosity/SIL go
+on) — validate on g50t before changing the rule.
+
+## Phase 4 — online reconfiguration (built)
+
+`ReconfigureCallback` (`--reconfigure`): re-measures reward density on recent rollouts
+every 20k steps and modulates curiosity live with hysteresis — auto-gamma's online
+pattern, generalized to the coefficient-tools. Smoke-validated (it fires and applies
+the rule; on ls20, density stays 0 so curiosity correctly stays on). The on→off switch
+needs a reward-regime shift to demonstrate — Phase 5 territory.
+
+## Caveats
+
+- Single seed; ls20's SIL success is high-variance (luck-dependent bootstrap), so the
+  encoder verdict needs seeds to be firm — but the SPR-off win (0.60) and the
+  object/hybrid collapse (0.00) are large effects.
+- Pixel→object parsing is the blocker for cross-modality object transfer: grids parse
+  to objects cleanly, animated/scrolling pixels do not (the Mario reference-frame trap).
+
+## Phase 5 — meta-training works with budget; held-out transfer is neutral
+
+One policy meta-trained on {ls20, g50t}, grid encoder, SIL + curiosity + auto-γ (no SPR):
+
+| budget | ls20 | g50t | tr87 (held-out, zero-shot) |
+|---|--:|--:|--:|
+| 500k | 0.00 | 0.05 | 0.00 |
+| 1.2M | **0.95** | **0.20** | 0.00 |
+
+- **Multi-game competence holds with adequate budget.** At 1.2M one policy plays ls20
+  (0.95 — *higher* than the 0.60 single-game) and g50t (0.20 ≈ its 0.30 single-game).
+  At 500k it is starved: the per-game SIL bootstrap can't be split, so the total budget
+  must **scale with the number of games**. Not a meta-training failure — a budget floor.
+- **Zero-shot on held-out tr87 = 0.00** — expected: ARC action semantics differ per
+  game, so a *frozen* policy can't transfer; it needs eval-time adaptation.
+- **Transfer (`--init-from` meta) into tr87 ≈ from scratch** (400k each): both stumble
+  onto level 1 a few times (SIL buffer ~400, eval 0.00), neither consolidates — transfer
+  gives **no measurable edge**. tr87's bottleneck is the **exploration/SIL bootstrap**
+  (luck of catching enough wins), which a transferred *representation* doesn't address.
+
+## The unifying theme (across this session)
+
+Every *representation / perception* lever tried came out neutral-to-negative: SPR
+(hurts sparse ARC), IDM/controllability (hurts Mario), object-centric & hybrid (no help
+on ls20), meta-transfer (neutral on tr87). The levers that actually move ARC are
+**consolidation (SIL)** — and, by implication, **exploration**. The bottleneck is
+*finding and reliably reproducing wins*, not seeing the world better. → the next real
+lever is **policy-guided Go-Explore** (reliable exploration + robustify via SIL), not
+more perception. And multi-game scale is **compute-gated** — the Kaggle/cloud GPU is the
+unlock (consistent with the ROADMAP GPU note).
+
+## Policy-guided Go-Explore — faster to the known frontier, level 2 still uncracked
+
+`go_explore.py` now explores from frontier cells with a trained policy (`--policy`,
++ an ε random fraction) instead of uniform random. A/B on ls20 (500k, seed 0), guided
+by the 1.2M meta policy:
+
+| Go-Explore | steps to level 1 | actions to level 1 | deepest level |
+|---|--:|--:|--:|
+| random | ~135k | 153 | 1 |
+| **policy-guided** | ~immediate (66) | **36** | 1 |
+
+Policy-guidance reaches the known frontier far faster and with a tighter solution
+(36 vs 153 actions) — but **neither cracks level 2**. Why: the guide was trained only
+to level 1, so on level-2 grids it is **out-of-distribution** — it re-solves the known
+part efficiently but has no prior for the novel mechanic. Chicken-and-egg: guiding
+level-2 exploration needs a policy that already knows level 2. The real path is the
+**iterated explore↔robustify loop** (Go-Explore steps deeper → SIL/BC robustifies a
+policy on it → that policy guides deeper → repeat) — the full Go-Explore algorithm. The
+policy-guided *explore* phase is built; the iterate-and-robustify outer loop is not.
+Level 2 may also be genuinely sample-hard on CPU.
+
+## Iterated explore↔robustify (full Go-Explore) — level 2 is a *discovery* wall
+
+`go_explore_iter.py`: explore (policy-guided) → behavioral-clone the policy on the
+frontier trajectories → repeat. ls20, 8 rounds × 60k, warm-started from the meta policy:
+
+| round | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|--|--|--|--|--|--|--|--|
+| deepest level | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+
+Cells grow 1615 → 3278; every round's frontier stays level 1. **The full loop never
+crosses level 2.** Why: the loop can only robustify what exploration *finds*, and
+explore never *completed* level 2 even once — so BC only ever teaches level-1 paths and
+the guide never extends past level 1. The chicken-and-egg is unbroken because the first
+level-2 completion never happens. (A caveat: BC on an ever-growing set of level-1 paths
+may even *sharpen* level-1 behavior and reduce the exploration entropy that could
+stumble level 2 — robustifying the known can crowd out discovering the unknown.)
+
+This **locates the wall precisely**: ls20 level 2 is neither a *return* wall (Go-Explore
+returns fine) nor a *consolidation* wall (SIL/BC reproduce what's found) — it is a
+**discovery** wall. Its mechanic (a required path under a depleting life budget) is not
+hit by trial-and-error: random (1.5M), policy-guided (500k), and iterated (480k) all
+stall at level 1. This is where pure trial-and-error RL caps. Crossing it needs
+*understanding the puzzle's goal/mechanic* — i.e. reasoning — pointing at the Phase 9
+reasoning/VLM agent, not another exploration trick. It reframes the session's theme:
+the movable levers were consolidation/exploration, but past a point even *directed*
+exploration can't discover an unseen mechanic — reasoning is the next axis.
+
+## Reasoning agent — the other axis (prototype built, dry-run validated)
+
+`arc_llm_agent.py` tests the reasoning axis the discovery wall points at: an LLM reads
+the grid **as text** (ARC grids are symbolic — no vision needed), reasons about what
+each action does and what the goal is, acts, observes, updates running notes, repeats
+(the perceive→reason→act→observe→remember loop). The harness is built and validated for
+free via `--dry-run` (random actions, no API) — the env loop, 64×64→text serialization,
+and per-action diff all work (the dry-run already shows ACTION5 = no effect on ls20,
+matching the action-probe). A real run needs `pip install anthropic` + an API key and
+costs ~$5/episode, so it's gated behind an explicit go-ahead. **Scope caveat:**
+ARC-AGI-3's competition eval is offline (no external LLM/API), so this is a *research
+probe* of "does reasoning break the discovery wall", not the submission path.

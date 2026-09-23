@@ -3,3 +3,6 @@ __pycache__/
 
 # Generated videos / rollouts / training artifacts
 data/*
+
+# ARC-AGI-3 game files downloaded by the SDK at runtime (not source)
+src/environment_files/

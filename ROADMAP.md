@@ -135,6 +135,41 @@ indication* principle holds. It serves **both** roadmap axes: more efficient
 
 ---
 
+## The generic ARC agent — build plan (Phases 1–5)  🔨 IN PROGRESS
+
+The concrete path to Phase 9 on ARC-AGI-3. The insight: **weight transfer is fragile
+(see FINDINGS), so don't transfer the policy — transfer the *perception* + the
+*adaptation loop*.** Train the *ability to figure out an unseen game*, not a game. The
+competition submission is a system **pretrained on public games to adapt** at eval
+(the held-out games are secret — nothing can memorize them).
+
+1. **Object-centric perception** — `objects.py`, `ObjectCentricExtractor`. See the
+   grid as a set of entities (connected components: a *generic* structural transform,
+   no game knowledge) + a learned DeepSets encoding. The transferable "understanding"
+   layer. `viz_objects.py` shows it finds ls20's avatar + life-bar with no labels.
+   *Status: built; A/B vs the color-CNN encoder running.*
+2. **Rule discovery per game** — `action_probe.py` discovers what each action does
+   (counterfactual |Δobs|; found ls20's 2 dead actions) → per-game action pruning;
+   curiosity + Go-Explore for the goal. Runs at eval on unseen games.
+3. **Consolidation + episodic memory** — SIL (built) reuses rare wins; episodic
+   memory (planned) so the agent doesn't repeat the same mistake.
+4. **Online adaptation** — re-measure the `auto_config` signals *during* play and
+   toggle the coefficient-tools with hysteresis (auto-gamma already runs online);
+   architectural tools (memory, encoder) stay fixed at start.
+5. **Meta-training + held-out eval** — train the whole loop across public games,
+   measure generalization on a held-out one. The real train-here-works-there test.
+
+Tools live in a self-configuring library (`docs/auto-config.md`): a cheap probe picks
+the subset per game; short-budget triage (`auto_loop.py`) breaks ties on the game's
+own metric. **A tool can work mechanically yet hurt the task** (controllability/IDM on
+Mario, FINDINGS) — the selector must judge on performance, not on the mechanism.
+
+Reference-frame caveat: change-based understanding tools need a **fixed camera**. ARC
+has one; screen-locked scrolling games (Mario) don't — `egomotion.py` is the optional
+fix. Another reason ARC, not Mario, is the right testbed.
+
+---
+
 ## Infra note — the GPU unlock
 
 Several items above wait on the same thing: **a GPU learner**. Docker-on-Mac

@@ -27,7 +27,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.preprocessing import preprocess_obs
 from stable_baselines3.common.utils import obs_as_tensor
 
-from auto_config import auto_configure
+from auto_config import SPARSE_BELOW, auto_configure
 from controllability import InverseDynamicsHead
 from game_env import make_multi_venv, make_venv
 from games import get_game, get_games
@@ -351,6 +351,52 @@ class SILCollector(BaseCallback):
         return True
 
 
+class ReconfigureCallback(BaseCallback):
+    """Online re-configuration (ROADMAP Phase 4): re-measure reward density on *recent*
+    experience every `freq` steps and re-apply auto_config's curiosity rule live, with
+    hysteresis — so a game that starts sparse (explore) and becomes rewarding (exploit)
+    turns curiosity down on its own, and back up if reward dries out. The tool choice is
+    reassessed *during* play, not frozen at the start.
+
+    Scope: modulates only an already-instantiated coefficient-tool (RND intrinsic_coef);
+    architectural tools (memory, encoder) can't flip mid-run, so they stay as chosen at
+    start. auto-gamma is the existing precedent for an online-adaptive knob."""
+
+    def __init__(self, base_intrinsic, freq=20_000, window=4000):
+        super().__init__()
+        self.base_intrinsic = base_intrinsic
+        self.freq = freq
+        self.lo, self.hi = SPARSE_BELOW * 0.5, SPARSE_BELOW * 1.5   # hysteresis band
+        self._rews = deque(maxlen=window)
+        self._rnd = None
+
+    def _find_rnd(self):
+        env = self.model.env
+        while env is not None:
+            if isinstance(env, RNDReward):
+                return env
+            env = getattr(env, "venv", None)
+        return None
+
+    def _on_training_start(self):
+        self._rnd = self._find_rnd()
+
+    def _on_step(self):
+        if self._rnd is None:
+            return True
+        for info, r in zip(self.locals["infos"], self.locals["rewards"]):
+            self._rews.append(float(info.get("extrinsic", r)) != 0.0)
+        if self.num_timesteps % self.freq < self.training_env.num_envs and self._rews:
+            density = float(np.mean(self._rews))
+            cur = self._rnd.intrinsic_coef
+            new = 0.0 if (density > self.hi and cur > 0) else \
+                  self.base_intrinsic if (density < self.lo and cur == 0) else cur
+            self._rnd.intrinsic_coef = new
+            self.logger.record("reconfig/reward_density", density)
+            self.logger.record("reconfig/intrinsic_coef", new)
+        return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default="breakout")
@@ -396,12 +442,19 @@ def main():
     ap.add_argument("--frame-stack", type=int, default=1,
                     help="stack N frames for a raw grid game (perceive motion); "
                          "pixel games already stack 4")
+    ap.add_argument("--encoder", choices=["grid", "object", "hybrid"], default="grid",
+                    help="grid encoder for raw-grid games: 'grid' = color-embedding CNN, "
+                         "'object' = object-centric DeepSets, 'hybrid' = both concatenated "
+                         "(spatial map + entities; Phase 1)")
     ap.add_argument("--auto", action="store_true",
                     help="self-configure: probe the game and pick the tools "
                          "(curiosity/SIL/frame-stack/memory) from measurement")
     ap.add_argument("--recurrent", action="store_true",
                     help="memory tool: an LSTM policy (RecurrentPPO) for games with "
                          "hidden state a single frame can't show (non-Markovian grids)")
+    ap.add_argument("--reconfigure", action="store_true",
+                    help="online adaptation: re-assess reward density during play and "
+                         "modulate curiosity live (Phase 4), instead of fixing it at start")
     args = ap.parse_args()
 
     perf.setup_cpu_threads(args.torch_threads)
@@ -441,7 +494,7 @@ def main():
         if args.spr_coef > 0:
             print("note: SPR not yet supported with --recurrent — off", flush=True)
             args.spr_coef = 0.0
-        pk = policy_kwargs_for(venv.observation_space)
+        pk = policy_kwargs_for(venv.observation_space, args.encoder)
         pk["lstm_hidden_size"] = 256
         model = RecurrentPPOSIL("CnnLstmPolicy", venv, sil_coef=args.sil_coef,
                                 policy_kwargs=pk, **common)
@@ -449,7 +502,7 @@ def main():
         model = PPOSPR(
             "CnnPolicy", venv, spr_coef=args.spr_coef, spr_lr=args.spr_lr,
             idm_coef=args.idm_coef, sil_coef=args.sil_coef,
-            policy_kwargs=policy_kwargs_for(venv.observation_space), **common,
+            policy_kwargs=policy_kwargs_for(venv.observation_space, args.encoder), **common,
         )
         if args.init_from:
             src = PPO.load(args.init_from, device="cpu")
@@ -473,6 +526,8 @@ def main():
         callbacks.append(AutoGamma())
     if args.sil_coef > 0:
         callbacks.append(SILCollector())
+    if args.reconfigure and curious:
+        callbacks.append(ReconfigureCallback(args.intrinsic_coef))
     if not args.games and get_game(args.game).progress_key:
         callbacks.append(ProgressStats(get_game(args.game).progress_key))
     print(f"Training {'RecurrentPPO' if args.recurrent else 'PPO+SPR'} "

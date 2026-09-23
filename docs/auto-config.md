@@ -28,8 +28,18 @@ when useless** (off = saved compute, less noise).
    | SPR | dynamics-aware representation | any (sample-efficiency) |
    | frame-stack | perceive motion | things move between frames |
    | recurrence (LSTM) | remember task state | non-Markovian / must recall |
-   | latent encoder | compact obs, faster | high-dim compressible obs |
    | self-imitation | reuse rare successes | sparse wins, on-policy forgets |
+   | object-centric encoder | entities + relations, transfer | grid games (Phase 1) |
+   | action→effect probe | discover action semantics / dead actions | unknown per-game actions (ARC) |
+   | online reconfigure | reassess tools *during* play | reward regime shifts mid-game |
+
+   Built but **not yet library-grade** (a tool joins the active set only once it has
+   *helped the task* on ≥1 game — mechanism working is not enough):
+   - **controllability / inverse dynamics** (`--idm-coef`): learns "what I control"
+     (idm_acc ~0.8) but *hurt* Mario — kept as a manual flag / interpretability probe.
+   - **ego-motion compensation** (`egomotion.py`): removes camera scroll for
+     screen-locked games; no scroll in the states we sampled on Mario, so unproven.
+     Carries its own selector (the measured global shift), so it can auto-gate later.
 
 2. **Detectors** — cheap probes that read the environment and set each tool's
    on/off (the self-configuration). Built in `auto_config.py` (`probe` +

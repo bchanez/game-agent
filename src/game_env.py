@@ -230,21 +230,32 @@ class VecPrevActionReward(VecEnvWrapper):
         return self._obs(image), rewards, dones, infos
 
 
-def make_multi_venv(specs, n_envs=8, subproc=None, normalize_reward=True):
+def make_multi_venv(specs, n_envs=8, subproc=None, normalize_reward=True, frame_stack=1):
     """One vec-env mixing several games behind a single policy — the substrate
-    for a multi-game agent. Obs (84x84x1) and actions (Discrete(N_ACTIONS)) are
-    already unified per game, so a SubprocVecEnv happily runs the mix.
+    for a multi-game agent. Obs and actions are already unified per game, so a
+    SubprocVecEnv happily runs the mix (pixel games: 84x84x1 + Discrete(N_ACTIONS);
+    grid games: 1x64x64 + the ARC action set).
 
     n_envs is the *total* number of workers (kept at the tuned sweet spot ~8),
     distributed round-robin across `specs` — not n_envs per game, which would
     blow up RAM. VecMonitor sits above per-env NormalizeReward, so logged
     `ep_rew_mean` is normalized; use eval on raw envs for true performance.
+
+    Pixel and raw-grid mixes need different stacking (channels-last 84x84 vs
+    channels-first grid), so the mix must be homogeneous — all pixel or all raw.
     """
     if subproc is None:
         subproc = n_envs > 1
     chosen = [specs[i % len(specs)] for i in range(n_envs)]
+    raw = all(s.raw for s in chosen)
+    if not raw and any(s.raw for s in chosen):
+        raise ValueError("make_multi_venv: cannot mix pixel and raw-grid games "
+                         "(incompatible obs pipelines)")
     env_fns = [(lambda s=s: make_single_env(s, normalize_reward)) for s in chosen]
     venv = SubprocVecEnv(env_fns) if subproc else DummyVecEnv(env_fns)
-    venv = VecFrameStack(venv, 4, channels_order="last")
+    if not raw:
+        venv = VecFrameStack(venv, 4, channels_order="last")   # classic pixel recipe
+    elif frame_stack > 1:
+        venv = VecFrameStack(venv, frame_stack, channels_order="first")
     venv = VecMonitor(venv)
     return venv

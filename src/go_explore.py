@@ -11,7 +11,14 @@ replaying a stored action sequence from reset — no state-save API needed. This
 the tabular/exploration phase; the best trajectory it finds is dumped so a policy
 can be robustified from it later (via self-imitation / behavioral cloning).
 
+Random bursts reach level 1 but never level 2 (FINDINGS): they squander level 2's
+depleting "life" budget. **Policy-guided** exploration (`--policy`) fixes the *what
+you do at the frontier*: sample the explore actions from a trained SIL policy (which
+already solves level 1) instead of uniform random, keeping an ε fraction random for
+raw novelty. The policy is a directed prior ("move toward things") that random lacks.
+
     python src/go_explore.py --game arc_ls20 --steps 500000 --explore-len 30
+    python src/go_explore.py --game arc_ls20 --policy data/models/arc_ls20_final.zip
 
 Cell = (levels_completed, grid subsampled by --factor). Generic: a spatial
 downsample plus the game's own level counter — no per-game perception.
@@ -36,8 +43,13 @@ def main():
     ap.add_argument("--game", default="arc_ls20")
     ap.add_argument("--steps", type=int, default=500_000, help="env-step budget")
     ap.add_argument("--explore-len", type=int, default=30,
-                    help="random steps taken after returning to a cell")
+                    help="steps taken after returning to a cell")
     ap.add_argument("--factor", type=int, default=2, help="grid subsample for cells")
+    ap.add_argument("--policy", default=None,
+                    help="trained model.zip: sample explore actions from it (policy-guided) "
+                         "instead of uniform random")
+    ap.add_argument("--epsilon", type=float, default=0.3,
+                    help="fraction of explore steps kept uniform-random even with --policy")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="/app/data/models/arc_ls20_goexplore.pkl",
                     help="dump the best trajectory found (for robustification)")
@@ -50,6 +62,20 @@ def main():
     spec = get_game(args.game)
     env = spec.make_raw_env()
     n_actions = env.action_space.n
+
+    # policy-guided: the raw grid obs (1,64,64) is exactly what the policy trained on
+    # (ARC grids skip the pixel pipeline), so it consumes obs[None] directly.
+    model = None
+    if args.policy:
+        from stable_baselines3 import PPO
+        model = PPO.load(args.policy, device="cpu")
+        print(f"Policy-guided from {args.policy} (epsilon={args.epsilon})", flush=True)
+
+    def explore_action(obs):
+        if model is None or random.random() < args.epsilon:
+            return random.randrange(n_actions)
+        a, _ = model.predict(np.asarray(obs)[None], deterministic=False)
+        return int(a[0])
 
     def key_of(obs, info):
         grid = np.asarray(obs)[0]                 # (64,64) color indices
@@ -85,7 +111,7 @@ def main():
         traj = list(entry["traj"])
 
         for _ in range(args.explore_len):
-            a = random.randrange(n_actions)
+            a = explore_action(obs)
             obs, r, term, trunc, info = env.step(a)
             traj.append(a)
             steps += 1
