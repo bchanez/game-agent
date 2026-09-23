@@ -39,13 +39,14 @@ Every script takes `--game` (see `src/games/` for what's registered: `mario`,
 `montezuma`, `breakout`). Against the running container:
 
 ```sh
-docker exec mario-jupyter bash -c "cd /app && python src/train_curiosity.py --game breakout --timesteps 1000000 --n-envs 8"
+docker exec mario-jupyter bash -c "cd /app && python src/train_ppo_spr.py --game breakout --timesteps 1000000 --n-envs 8"
 docker exec mario-jupyter bash -c "cd /app && python src/eval_models.py --game breakout"
-docker exec mario-jupyter bash -c "cd /app && python src/record_agent.py --game breakout --model data/models/breakout_curiosity_final.zip"
+docker exec mario-jupyter bash -c "cd /app && python src/record_agent.py --game breakout --model data/models/breakout_ppo_spr_final.zip"
 ```
 
-Or open http://localhost:8888/lab and run `src/train.ipynb` to train and watch
-an agent interactively. See `ROADMAP.md` for the architecture and `FINDINGS.md`
+`train_ppo_spr.py` is the one training entry point (PPO + the self-configuring
+toolbox: SPR, curiosity, self-imitation, ...); add `--auto` to let it probe the
+game and pick its tools. See `ROADMAP.md` for the architecture and `FINDINGS.md`
 for research results.
 
 # Useful docker commands

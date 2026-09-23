@@ -620,6 +620,24 @@ result also cautions that magnitude coefficients may not need per-game tuning on
 dense games — so extend auto-derivation to `intrinsic_coef`/`ent_coef` only with
 evidence they matter, not preemptively.
 
+## Mario 1-1 plateaus at x_pos ~1400 — and curiosity makes it worse
+
+Mario 1-1 (flag at x_pos ~3200) is a solved benchmark, so our plateau is a symptom
+worth diagnosing. Observations: the auto config (curiosity off, SPR on, auto-gamma)
+plateaus at training `x_pos_mean ~1400` — `x_pos_max` touches ~3160 (the flag) *now
+and then* but the mean doesn't climb from 500k → 1M → 2M. So the agent *can* finish
+occasionally but is stuck mid-level most episodes: a **consistency** wall, not a
+time problem.
+
+Hypothesis tested — does curiosity help pass the hard obstacle? **No, it hurts**:
+with RND on, `x_pos_mean` fell to ~700 (worse than the ~1400 plateau). On a dense
+game the intrinsic reward pulls toward novelty (dying, backtracking) and fights the
+progress signal — which **validates the auto-config rule "curiosity off when reward
+is dense"** (it wasn't too aggressive). So the missing lever is *not* curiosity.
+Remaining suspects, untested: the 14-action canonical space (harder to explore than
+Mario's usual 7-action set), auto-gamma being too far-sighted for Mario's time
+penalty, or it genuinely needing a non-"human-indication" lever. Open.
+
 ## Tools built along the way (all generic — no per-game tuning, all toggleable)
 
 - **self-imitation** (`SILCollector` + `sil_push_episode`): keep every *winning*
@@ -656,3 +674,103 @@ mechanic, so **Go-Explore is the next lever**.
   click, the latter deferred to v2).
 - "Completions" counted from `curiosity/extrinsic_mean` per rollout (VecMonitor
   sits under RNDReward, so `ep_rew_mean` is the mixed reward, not game reward).
+
+# Findings — action understanding, and Mario's reference-frame trap
+
+Closing the open Mario suspects above (action space, gamma) and probing the
+"understand each action before optimizing" idea with two new tools. Headline: the
+Mario wall is a local optimum (not the action set), and *change-based* understanding
+tools are blind on Mario because its camera scrolls — but clean on the fixed-frame
+ARC grid, which is the right testbed anyway.
+
+## Reduced action space does NOT break Mario's wall (suspect refuted)
+
+Same PPO recipe (spr=0, γ=0.9, seed=0, 1M steps), single-game Mario, only the action
+set varies (`diag_mario_actions.py`). Deterministic eval, 20 episodes (all identical
+— env+policy deterministic, zero variance):
+
+| action set | eval x_pos | flags |
+|---|--:|:-:|
+| canonical 14 | 1401 | 0/20 |
+| SIMPLE_MOVEMENT 7 | 1424 | 0/20 |
+| RIGHT_ONLY 5 | 1541 | 0/20 |
+
+All hit a hard wall at ~x1400–1540. Shrinking the action space moves it +10% at most
+— it does **not** break it. So the plateau is a **local optimum on a specific
+obstacle (~x1400)**, not an action-space, gamma (already refuted: auto-γ == 0.9), or
+variance problem. With curiosity also refuted earlier, the cheap suspects are all
+eliminated — breaking the wall needs exploration *from the hard state itself*
+(Go-Explore-style), not a knob.
+
+## Controllability (inverse dynamics) as a representation aux — hurts on Mario
+
+New tool (`controllability.py`, `--idm-coef`): predict the action from two
+consecutive latents, shaping the encoder toward "what I control" (ICM's inverse
+model repurposed as a representation objective). 2×2 vs SPR, Mario 500k, seed 0;
+deterministic greedy + 10 stochastic episodes:
+
+| model | greedy_x | stoch_mean | stoch_max |
+|---|--:|--:|--:|
+| plain | 1415 | 1447 | 1952 |
+| SPR | 1410 | **1529** | 1961 |
+| IDM | 434 | 1182 | 1673 |
+| SPR+IDM | 314 | 1035 | 1676 |
+
+**IDM degrades Mario badly** (greedy collapses to 434/314) and destroys SPR's edge.
+The *mechanism* works — `idm/action_acc` reaches ~0.8, the encoder does learn to
+predict actions — but the representation it induces is bad for the task, and the
+saliency viz is diffuse (no clean avatar localization). Cause → the reference-frame
+section below.
+
+## Action→effect probe: clean on ARC, blind on Mario
+
+New tool (`action_probe.py`): characterize each action by the change it causes,
+*counterfactually* — from the same state, replay each action and measure |Δobs|
+(deterministic games only). This is the "try each button, see what it does" idea.
+
+| game | active actions | dead actions |
+|---|---|---|
+| ARC ls20 | 0,1,2,3 (Δ≈0.42) | **4,5 (Δ = 0.0000)** |
+| Mario | all 14 (Δ 0.83–1.00, incl **NOOP 0.99**) | none |
+
+On ARC it **discovers from scratch** that ls20 uses only 4 of 6 actions (matches the
+game) and shows *where* each acts (crisp per-action effect maps; dead actions render
+black). On Mario it is **blind**: NOOP causes as much change (0.99) as any action —
+nothing separable.
+
+## Root cause — Mario is screen-locked (ego-motion); ARC is not
+
+One reason both tools fail on Mario and shine on ARC: **Mario's camera follows the
+avatar**, so Mario stays ~centered and *the world scrolls*. The agent's own motion
+appears as **global background motion**, and the avatar is paradoxically the
+**stable** region. Every change-based signal (probe magnitude, IDM frame-diff,
+saliency) therefore measures the *world scroll*, not the controllable avatar — hence
+NOOP ≈ every action on Mario, and IDM learning useless global-shift features. ARC has
+a **fixed camera** (objects move in a static frame), so change localizes perfectly.
+
+**Implication:** ARC (the north-star) is already the right reference frame for
+action-understanding tools — focus them there. For scrolling pixel games the generic
+fix is **ego-motion compensation** (estimate + subtract the global shift, like image
+stabilization), left as an optional tool. Mario is a hostile frame, not a failure of
+the idea. (Echoes the earlier "Mario is the wrong testbed for meta-RL" conclusion.)
+
+## Tools built (generic, toggleable)
+
+- **controllability / inverse dynamics** (`controllability.py`, `PPOSPR --idm-coef`;
+  `viz_controllability.py` for saliency): action-prediction aux head. Verdict: not a
+  Mario lever; keep for tasks where controllability *is* the needed information, or as
+  a *separate* interpretability probe (don't shape the policy encoder with it on
+  world-perception games). Also fixed a latent `PPOSPR.load` crash.
+- **action→effect probe** (`action_probe.py`): counterfactual per-action effect +
+  spatial maps; discovers dead actions per game with no human indication. Clean payoff
+  on fixed-frame grids (ARC) → a candidate for auto-pruning the per-game action set.
+
+## Caveats
+
+- Single seed throughout. Mario eval is deterministic, so `greedy_x` is one
+  trajectory (the stochastic columns give the spread). Controllability ran to 500k,
+  not 1M.
+- The probe's counterfactual mode assumes determinism (holds for ARC and Mario-v0).
+- IDM was wired to shape the *shared policy encoder* (the aggressive setting); a
+  lower coef or a separate encoder was not swept — the negative verdict is for "IDM as
+  policy-encoder shaping on Mario", not for every possible use.

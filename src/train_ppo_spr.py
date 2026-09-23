@@ -28,6 +28,7 @@ from stable_baselines3.common.preprocessing import preprocess_obs
 from stable_baselines3.common.utils import obs_as_tensor
 
 from auto_config import auto_configure
+from controllability import InverseDynamicsHead
 from game_env import make_multi_venv, make_venv
 from games import get_game, get_games
 from nets import is_grid_space, policy_kwargs_for
@@ -105,7 +106,7 @@ class SILMixin:
 
 class PPOSPR(PPO, SILMixin):
     def __init__(self, *args, spr_coef=1.0, spr_lr=1e-4, spr_epochs=1,
-                 spr_batch=256, spr_tau=0.01,
+                 spr_batch=256, spr_tau=0.01, idm_coef=0.0, idm_lr=1e-4,
                  sil_coef=0.0, sil_epochs=4, sil_batch=64, sil_buffer=20000,
                  sil_value_coef=0.01, **kwargs):
         super().__init__(*args, **kwargs)
@@ -113,15 +114,26 @@ class PPOSPR(PPO, SILMixin):
         self.spr_epochs = spr_epochs
         self.spr_batch = spr_batch
         self.spr_tau = spr_tau
-        # SPR trains the *policy's* encoder, so it must feed it obs on the same
+        self.idm_coef = idm_coef
+        self._sil_init(sil_coef, sil_epochs, sil_batch, sil_buffer, sil_value_coef)
+        # SB3's load() re-invokes __init__ with _init_setup_model=False (no policy /
+        # spaces yet) then restores attributes; skip the aux-head build in that case.
+        if getattr(self, "policy", None) is None:
+            return
+        # SPR/IDM train the *policy's* encoder, so they must feed it obs on the same
         # scale the policy does: /255 for images, but a one-hot grid is already 0/1.
         self._normalize_images = not is_grid_space(self.observation_space)
-        self._sil_init(sil_coef, sil_epochs, sil_batch, sil_buffer, sil_value_coef)
+
+        feature_dim = self.policy.features_extractor.features_dim
+        if idm_coef > 0:
+            self.idm_head = InverseDynamicsHead(feature_dim, self.action_space.n).to(self.device)
+            self.idm_optimizer = torch.optim.Adam(
+                list(self.policy.features_extractor.parameters())
+                + list(self.idm_head.parameters()), lr=idm_lr)
 
         if spr_coef <= 0:
             return
 
-        feature_dim = self.policy.features_extractor.features_dim
         self.spr_head = SPRHead(feature_dim, self.action_space.n).to(self.device)
         # EMA copy of the encoder: the moving target that prevents collapse
         self.target_encoder = copy.deepcopy(self.policy.features_extractor).to(self.device)
@@ -139,21 +151,22 @@ class PPOSPR(PPO, SILMixin):
                               normalize_images=self._normalize_images)
         return encoder(prep)
 
-    def _spr_update(self):
-        # must run before super().train(): rollout_buffer.get() flattens
-        # observations/actions in place, but leaves episode_starts (n_steps, n_envs)
+    def _rollout_transitions(self):
+        """(s_t, s_{t+1}, a_t) for every within-episode transition in the rollout.
+        rollout_buffer.get() flattens obs/actions in place but leaves episode_starts
+        (n_steps, n_envs), so this must run *before* super().train()."""
         buf = self.rollout_buffer
         obs, actions = buf.observations, buf.actions      # (n_steps, n_envs, ...)
-        # a transition t->t+1 is valid only within one episode
-        mask = ~buf.episode_starts[1:].astype(bool)       # (n_steps-1, n_envs)
+        mask = ~buf.episode_starts[1:].astype(bool)       # a t->t+1 is valid only within one episode
         t_idx, e_idx = np.nonzero(mask)
         if len(t_idx) == 0:
-            return
-        s_t, s_tp1 = obs[t_idx, e_idx], obs[t_idx + 1, e_idx]
-        a_t = actions[t_idx, e_idx]
+            return None
+        return obs[t_idx, e_idx], obs[t_idx + 1, e_idx], actions[t_idx, e_idx]
 
+    def _spr_update(self, transitions):
+        s_t, s_tp1, a_t = transitions
         self.policy.set_training_mode(True)
-        n = len(t_idx)
+        n = len(a_t)
         for _ in range(self.spr_epochs):
             perm = np.random.permutation(n)
             for start in range(0, n, self.spr_batch):
@@ -171,9 +184,36 @@ class PPOSPR(PPO, SILMixin):
         ema_update(self.target_encoder, self.policy.features_extractor, self.spr_tau)
         self.logger.record("spr/loss", float(loss.item()))
 
+    def _idm_update(self, transitions):
+        # both latents from the *online* encoder (no EMA target): predicting a_t is a
+        # supervised label, so there is no collapse to guard against.
+        s_t, s_tp1, a_t = transitions
+        self.policy.set_training_mode(True)
+        n = len(a_t)
+        perm = np.random.permutation(n)
+        last_loss, last_acc = 0.0, 0.0
+        for start in range(0, n, self.spr_batch):
+            idx = perm[start:start + self.spr_batch]
+            z_t = self._features(s_t[idx], self.policy.features_extractor)
+            z_tp1 = self._features(s_tp1[idx], self.policy.features_extractor)
+            a = torch.as_tensor(a_t[idx], device=self.device)
+            ce, acc = self.idm_head(z_t, z_tp1, a)
+            loss = self.idm_coef * ce
+            self.idm_optimizer.zero_grad()
+            loss.backward()
+            self.idm_optimizer.step()
+            last_loss, last_acc = float(ce.item()), float(acc.item())
+        self.logger.record("idm/loss", last_loss)
+        self.logger.record("idm/action_acc", last_acc)   # how controllable-aware the encoder is
+
     def train(self):
-        if self.spr_coef > 0:
-            self._spr_update()
+        if self.spr_coef > 0 or self.idm_coef > 0:
+            transitions = self._rollout_transitions()
+            if transitions is not None:
+                if self.spr_coef > 0:
+                    self._spr_update(transitions)
+                if self.idm_coef > 0:
+                    self._idm_update(transitions)
         super().train()
         if self.sil_coef > 0:
             self._sil_update()
@@ -328,6 +368,9 @@ def main():
     ap.add_argument("--spr-coef", type=float, default=1.0,
                     help="weight of the self-predictive loss (0 = plain PPO control)")
     ap.add_argument("--spr-lr", type=float, default=1e-4)
+    ap.add_argument("--idm-coef", type=float, default=0.0,
+                    help="inverse-dynamics weight (0 = off): predict the action from "
+                         "two frames, shaping the encoder toward what the agent controls")
     ap.add_argument("--sil-coef", type=float, default=0.0,
                     help="self-imitation weight (0 = off): replay winning episodes "
                          "so PPO reuses its rare sparse-reward successes")
@@ -405,7 +448,7 @@ def main():
     else:
         model = PPOSPR(
             "CnnPolicy", venv, spr_coef=args.spr_coef, spr_lr=args.spr_lr,
-            sil_coef=args.sil_coef,
+            idm_coef=args.idm_coef, sil_coef=args.sil_coef,
             policy_kwargs=policy_kwargs_for(venv.observation_space), **common,
         )
         if args.init_from:
@@ -433,13 +476,18 @@ def main():
     if not args.games and get_game(args.game).progress_key:
         callbacks.append(ProgressStats(get_game(args.game).progress_key))
     print(f"Training {'RecurrentPPO' if args.recurrent else 'PPO+SPR'} "
-          f"(spr={args.spr_coef}, sil={args.sil_coef}, intrinsic={args.intrinsic_coef}, "
+          f"(spr={args.spr_coef}, idm={args.idm_coef}, sil={args.sil_coef}, "
+          f"intrinsic={args.intrinsic_coef}, "
           f"gamma={'auto' if args.auto_gamma else args.gamma}) "
           f"for {args.timesteps} steps on {args.n_envs} env(s)...", flush=True)
     model.learn(total_timesteps=args.timesteps, callback=callbacks)
 
     final = args.out or os.path.join(MODELS_DIR, f"{prefix}_final")
     model.save(final)
+    if args.idm_coef > 0:
+        # sidecar: the inverse-dynamics head, so viz_controllability.py can rebuild it
+        # (PPO.load restores the encoder; the aux head isn't part of the PPO policy)
+        torch.save(model.idm_head.state_dict(), f"{final}_idm.pt")
     print(f"Saved {final}.zip", flush=True)
 
 
